@@ -1,0 +1,14 @@
+# MiniVecDB Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core (required)
+numpy>=1.24.0
+
+# Embedding model (required for real embeddings)
+sentence-transformers>=2.2.0
+
+# Web interface (required for demo)
+flask>=3.0.0
+
+# Testing (development)
+pytest>=7.0.0
