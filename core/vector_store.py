@@ -1,40 +1,34 @@
 """
 +===============================================================+
-|  MiniVecDB -- VectorStore (The Heart of the Project)           |
+|  MiniVecDB -- VectorStore (Core Engine)                        |
 |  File: minivecdb/core/vector_store.py                          |
 |                                                                |
-|  This class ties together ALL the components:                  |
-|    SQLite (via DatabaseManager) -- structured data storage     |
-|    NumPy  (.npy files)          -- vector embedding storage    |
-|    EmbeddingEngine              -- text -> vector conversion   |
+|  Status: Day 11 complete                                         |
 |                                                                |
-|  TODAY (Day 5) we implement:                                   |
-|    __init__, insert, insert_batch, get, save, _load, count     |
-|                                                                |
-|  LATER we'll add:                                              |
-|    search, delete, update, list, stats, etc.                   |
+|  This class integrates the full MiniVecDB feature set:         |
+|    1) CRUD for records (insert, get, update, delete)           |
+|    2) Vector search engine (cosine/euclidean/dot)              |
+|    3) Metadata pre-filtering + collection-aware search          |
+|    4) Collection management and bulk operations                 |
+|    5) Robust persistence and restart recovery                   |
+|       - vectors.npy (NumPy matrix)                              |
+|       - id_mapping.json (row -> record_id bridge)              |
+|       - SQLite (records, metadata, collections)                |
+|    6) Context manager support (`with VectorStore(...) as db`)  |
 +===============================================================+
 
 HOW THE PIECES FIT TOGETHER:
 
     When you call store.insert("Hello world"):
 
-    1. EmbeddingEngine converts "Hello world" -> [0.12, -0.03, ...]
-       (a 384-dimensional float32 vector)
+    1. EmbeddingEngine converts text into a (384,) float32 vector.
+    2. DatabaseManager stores text + metadata in SQLite.
+    3. NumPy appends the vector as a new row in _vectors.
+    4. _id_list stores the matching record ID for that row.
+    5. save() persists vectors.npy + id_mapping.json.
 
-    2. DatabaseManager stores the TEXT + METADATA in SQLite:
-         records table:  (id="vec_abc", text="Hello world", ...)
-         metadata table: (record_id="vec_abc", key="lang", value="en")
-
-    3. NumPy stores the VECTOR in memory as a row in _vectors matrix:
-         _vectors[42] = [0.12, -0.03, ...]   (row 42)
-
-    4. id_mapping.json bridges them:
-         _id_list[42] = "vec_abc"
-         So we know: row 42 in NumPy = record "vec_abc" in SQLite
-
-    5. save() writes _vectors to vectors.npy and _id_list to
-       id_mapping.json on disk for persistence.
+If persistence files are missing/corrupt, _load_vectors() triggers
+_rebuild_vectors() to re-embed from SQLite and restore consistency.
 """
 
 import os
@@ -928,7 +922,7 @@ class VectorStore:
         query: str,
         top_k: int = 5,
         metric: str = "cosine",
-        filters: Optional[Dict[str, str]] = None,
+        filters: Optional[Dict[str, Any]] = None,
         collection: Optional[str] = None,
     ) -> List[SearchResult]:
         """
@@ -953,7 +947,9 @@ class VectorStore:
                         "euclidean" — distance-based (lower = better)
                         "dot"       — fastest (best with normalised vectors)
             filters:    Optional metadata filters (AND logic).
-                        Example: {"category": "science", "year": "2024"}
+                        Supports exact match, list (OR), and operators
+                        ($gt, $lt, $gte, $lte, $ne).
+                        Example: {"category": "science", "year": {"$gt": "2020"}}
                         Only records matching ALL filters are searched.
             collection: Optional collection name to restrict search to.
 
@@ -1066,7 +1062,7 @@ class VectorStore:
         query_vector: np.ndarray,
         top_k: int = 5,
         metric: str = "cosine",
-        filters: Optional[Dict[str, str]] = None,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> List[SearchResult]:
         """
         Search using a pre-computed vector instead of text.
@@ -1159,7 +1155,7 @@ class VectorStore:
 
     def _get_filtered_indices(
         self,
-        filters: Dict[str, str],
+        filters: Dict[str, Any],
         collection: Optional[str] = None,
     ) -> np.ndarray:
         """
@@ -1172,7 +1168,8 @@ class VectorStore:
           3. Converts those IDs to NumPy matrix row indices.
 
         Args:
-            filters:    Metadata key-value pairs (AND logic).
+            filters:    Metadata filters (AND logic). Supports exact
+                        match, list (OR), and operators ($gt, $lt, etc.).
             collection: Optional collection to further restrict to.
 
         Returns:

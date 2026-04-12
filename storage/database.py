@@ -3,20 +3,25 @@
 |  MiniVecDB -- DatabaseManager (SQLite Wrapper)                 |
 |  File: minivecdb/storage/database.py                           |
 |                                                                |
-|  This module is the ONLY place in the project that talks to    |
-|  SQLite directly. Every other module (VectorStore, CLI, web)   |
-|  goes through this class to read/write structured data.        |
+|  Status: Day 8 complete                                         |
 |                                                                |
-|  It manages three tables:                                      |
-|    collections -- groups of related vectors (like folders)     |
-|    records     -- the actual data entries (id, text, etc.)     |
-|    metadata    -- key-value tags on records (EAV pattern)      |
+|  This module is the only SQLite access layer used by the app.  |
+|  VectorStore, CLI, and web code all go through this class.     |
 |                                                                |
-|  KEY CONCEPTS FOR LEARNING:                                    |
-|    - Parameterised queries (?) prevent SQL injection           |
-|    - Foreign keys with CASCADE auto-delete child rows          |
-|    - EAV (Entity-Attribute-Value) allows flexible metadata     |
-|    - All SQL lives in ARCHITECTURE.py, not here                |
+|  Core responsibilities:                                         |
+|    1) Record CRUD (insert/get/update/delete/existence checks)  |
+|    2) Metadata CRUD + filter-by-metadata (EAV pattern)         |
+|    3) Collection management and per-collection record listing  |
+|    4) Bulk operations (clear collection, clear all)            |
+|    5) Rebuild helpers (get_all_records_with_text)              |
+|                                                                |
+|  Schema tables:                                                 |
+|    collections, records, metadata                               |
+|                                                                |
+|  Key DBMS concepts used:                                        |
+|    - Parameterised SQL with ? placeholders                     |
+|    - Foreign keys with ON DELETE CASCADE                       |
+|    - Transaction context manager for atomic writes             |
 +===============================================================+
 """
 
@@ -381,26 +386,49 @@ class DatabaseManager:
         )
         self._conn.commit()
 
-    def filter_by_metadata(self, filters: Dict[str, str]) -> List[str]:
+    # Supported comparison operators for advanced metadata filtering.
+    # Maps operator name -> SQL comparison expression used in WHERE clause.
+    # The $ne operator compares the raw TEXT value; the numeric operators
+    # ($gt, $lt, $gte, $lte) cast the value to REAL so that "2021" > 2020
+    # works correctly as a number comparison, not a string comparison.
+    _FILTER_OPERATORS: Dict[str, str] = {
+        "$gt":  "CAST(value AS REAL) > ?",
+        "$lt":  "CAST(value AS REAL) < ?",
+        "$gte": "CAST(value AS REAL) >= ?",
+        "$lte": "CAST(value AS REAL) <= ?",
+        "$ne":  "value != ?",
+    }
+
+    def filter_by_metadata(self, filters: Dict[str, object]) -> List[str]:
         """
         Find record IDs that match ALL given metadata filters (AND logic).
 
-        Algorithm:
-          1. For each (key, value) pair in filters, run a SELECT to get
-             all record_ids that have that exact key=value tag.
-          2. Intersect all result sets using Python set intersection.
-          3. A record is included only if it appears in EVERY result set
-             (i.e. it has ALL the requested tags).
+        Supports three filter value types:
 
-        Example:
-            filters = {"category": "science", "year": "2024"}
-            Step 1: category=science  -> {"vec_001", "vec_003", "vec_007"}
-                    year=2024         -> {"vec_003", "vec_005", "vec_007"}
-            Step 2: intersection      -> {"vec_003", "vec_007"}
+        1. **Exact match** (string value):
+           {"category": "science"}
+           → WHERE key='category' AND value='science'
+
+        2. **List match / OR** (list of strings):
+           {"category": ["science", "tech"]}
+           → WHERE key='category' AND value IN ('science','tech')
+
+        3. **Comparison operators** (dict with operator keys):
+           {"year": {"$gt": "2020"}}
+           → WHERE key='year' AND CAST(value AS REAL) > 2020
+
+           Supported operators: $gt, $lt, $gte, $lte, $ne
+
+        Multiple filters use AND logic — a record must satisfy every
+        filter criterion to be included in the results.
 
         Args:
-            filters: Dict of key-value pairs to match.
-                     Example: {"category": "science", "year": "2024"}
+            filters: Dict mapping metadata keys to filter conditions.
+                     Values can be:
+                       - str:        exact match
+                       - list[str]:  match any value in the list (OR)
+                       - dict:       operator-based comparison
+                     Example: {"category": "science", "year": {"$gt": "2020"}}
 
         Returns:
             List of record IDs matching all filters.
@@ -413,12 +441,7 @@ class DatabaseManager:
         result_sets: List[set] = []
 
         for key, value in filters.items():
-            cursor = self._conn.execute(
-                SQL_QUERIES["filter_by_metadata"],
-                (key, str(value)),
-            )
-            # Build a set of IDs from the query results.
-            ids = {row[0] for row in cursor.fetchall()}
+            ids = self._execute_single_filter(key, value)
             result_sets.append(ids)
 
         # Intersect all sets: start with the first, then AND with each.
@@ -427,6 +450,90 @@ class DatabaseManager:
             matching_ids = matching_ids & s  # set intersection
 
         return sorted(matching_ids)
+
+    def _execute_single_filter(self, key: str, value: object) -> set:
+        """
+        Run one metadata filter and return the matching record IDs.
+
+        This is the workhorse behind filter_by_metadata(). It inspects
+        the type of `value` to decide which SQL query to run:
+
+          - str  → exact match using the existing filter_by_metadata query
+          - list → OR match using "value IN (?, ?, ...)"
+          - dict → operator comparison ($gt, $lt, $gte, $lte, $ne)
+
+        All queries use parameterised ? placeholders to prevent SQL
+        injection — values are NEVER interpolated into the SQL string.
+
+        Args:
+            key:   The metadata key to filter on (e.g. "category").
+            value: The filter condition (str, list, or dict).
+
+        Returns:
+            A set of record IDs matching this single filter.
+
+        Raises:
+            ValueError: If the value type is unsupported, or if an
+                        operator dict contains an unknown operator.
+        """
+        if isinstance(value, str):
+            # --- Case 1: Exact match ---
+            # Reuse the existing query: WHERE key=? AND value=?
+            cursor = self._conn.execute(
+                SQL_QUERIES["filter_by_metadata"],
+                (key, value),
+            )
+
+        elif isinstance(value, list):
+            # --- Case 2: List match (OR) ---
+            # Build: WHERE key=? AND value IN (?, ?, ...)
+            # The number of ? placeholders must match len(value).
+            if len(value) == 0:
+                return set()
+            placeholders = ", ".join("?" for _ in value)
+            sql = (
+                f"SELECT DISTINCT record_id FROM metadata "
+                f"WHERE key = ? AND value IN ({placeholders})"
+            )
+            # Parameters: key first, then each list element as a string
+            params = [key] + [str(v) for v in value]
+            cursor = self._conn.execute(sql, params)
+
+        elif isinstance(value, dict):
+            # --- Case 3: Operator-based comparison ---
+            # Each entry in the dict is an operator like {"$gt": "2020"}.
+            # Multiple operators on the same key are ANDed together.
+            # Build: WHERE key=? AND <op1_expr> AND <op2_expr> ...
+            conditions = ["key = ?"]
+            params: list = [key]
+
+            for op, operand in value.items():
+                if op not in self._FILTER_OPERATORS:
+                    raise ValueError(
+                        f"Unknown filter operator '{op}'. "
+                        f"Supported: {list(self._FILTER_OPERATORS.keys())}"
+                    )
+                conditions.append(self._FILTER_OPERATORS[op])
+                # For numeric operators, pass as float so SQLite can compare.
+                # For $ne, pass as string since it compares text values.
+                if op == "$ne":
+                    params.append(str(operand))
+                else:
+                    params.append(float(operand))
+
+            sql = (
+                "SELECT DISTINCT record_id FROM metadata WHERE "
+                + " AND ".join(conditions)
+            )
+            cursor = self._conn.execute(sql, params)
+
+        else:
+            raise ValueError(
+                f"Unsupported filter value type: {type(value).__name__}. "
+                f"Expected str, list, or dict."
+            )
+
+        return {row[0] for row in cursor.fetchall()}
 
     # ===============================================================
     # RECORD LISTING / ID RETRIEVAL

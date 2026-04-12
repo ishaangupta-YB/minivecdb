@@ -1,4 +1,4 @@
-# CLAUDE.md — MiniVecDB Project Instructions
+# AGENTS.md — MiniVecDB Project Instructions
 
 ## Project Overview
 
