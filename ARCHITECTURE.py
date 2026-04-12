@@ -68,6 +68,11 @@ SQL_QUERIES = {
     "delete_collection": "DELETE FROM collections WHERE name=?",
     "collection_exists": "SELECT 1 FROM collections WHERE name=? LIMIT 1",
     "stats_per_collection": "SELECT collection,COUNT(*) as count FROM records GROUP BY collection",
+    "all_records_with_text": "SELECT id,text FROM records ORDER BY created_at ASC",
+    "delete_records_in_collection": "DELETE FROM records WHERE collection=?",
+    "delete_all_records": "DELETE FROM records",
+    "list_record_ids": "SELECT id FROM records ORDER BY created_at ASC LIMIT ?",
+    "list_record_ids_in_collection": "SELECT id FROM records WHERE collection=? ORDER BY created_at ASC LIMIT ?",
 }
 
 # ═══════════════════════════════════════════════════════════════
