@@ -10,6 +10,8 @@
 
 import sys
 import os
+import shutil
+import tempfile
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -147,6 +149,64 @@ assert_true(isinstance(info["model_name"], str),
     f"Model name is a string: {info['model_name']}")
 
 # ═══════════════════════════════════════════
+print("\n── CACHE PATH RESOLUTION ──")
+# ═══════════════════════════════════════════
+previous_project_root = os.environ.get("MINIVECDB_PROJECT_ROOT")
+temp_project_root = tempfile.mkdtemp(prefix="minivecdb_cache_root_")
+
+try:
+    os.environ["MINIVECDB_PROJECT_ROOT"] = temp_project_root
+
+    # Default cache should be project_root/db_run/model_cache/huggingface.
+    default_cache_engine = EmbeddingEngine()
+    default_cache_path = default_cache_engine._resolve_cache_folder()
+    expected_default_cache = os.path.abspath(
+        os.path.join(temp_project_root, "db_run", "model_cache", "huggingface")
+    )
+    assert_true(
+        default_cache_path == expected_default_cache,
+        f"Default cache path resolves under db_run: {default_cache_path}",
+    )
+    assert_true(
+        os.path.isdir(default_cache_path),
+        "Default cache directory is created",
+    )
+
+    # Custom cache path should be respected and created.
+    custom_cache = os.path.join(temp_project_root, "custom_hf_cache")
+    custom_cache_engine = EmbeddingEngine(cache_folder=custom_cache)
+    custom_cache_path = custom_cache_engine._resolve_cache_folder()
+    assert_true(
+        custom_cache_path == os.path.abspath(custom_cache),
+        f"Custom cache path is respected: {custom_cache_path}",
+    )
+    assert_true(
+        os.path.isdir(custom_cache_path),
+        "Custom cache directory is created",
+    )
+
+    factory_custom = create_embedding_engine(
+        fallback=True,
+        cache_folder=custom_cache,
+    )
+    if isinstance(factory_custom, EmbeddingEngine):
+        assert_true(
+            factory_custom.cache_folder == custom_cache,
+            "Factory passes cache_folder to EmbeddingEngine",
+        )
+    else:
+        assert_true(
+            isinstance(factory_custom, SimpleEmbeddingEngine),
+            "Factory fallback still works with cache_folder argument",
+        )
+finally:
+    if previous_project_root is None:
+        os.environ.pop("MINIVECDB_PROJECT_ROOT", None)
+    else:
+        os.environ["MINIVECDB_PROJECT_ROOT"] = previous_project_root
+    shutil.rmtree(temp_project_root, ignore_errors=True)
+
+# ═══════════════════════════════════════════
 print("\n── SIMPLE ENGINE: SIMILARITY QUALITY ──")
 # ═══════════════════════════════════════════
 quality_engine = SimpleEmbeddingEngine(dimension=200)
@@ -200,6 +260,44 @@ if real_engine._check_availability():
     rvecs = real_engine.encode_batch(["Hello", "World", "Test"])
     assert_true(rvecs.shape == (3, 384),
         f"Batch shape: {rvecs.shape}")
+
+    # Verify cache reuse by forcing offline mode and loading from cache.
+    previous_hf_offline = os.environ.get("HF_HUB_OFFLINE")
+    previous_transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE")
+    try:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+        from sentence_transformers import SentenceTransformer
+
+        offline_model = SentenceTransformer(
+            real_engine.model_name,
+            cache_folder=real_engine.cache_folder,
+        )
+        if hasattr(offline_model, "get_embedding_dimension"):
+            offline_dim = offline_model.get_embedding_dimension()
+        else:
+            offline_dim = offline_model.get_sentence_embedding_dimension()
+
+        assert_true(
+            offline_dim == 384,
+            "Offline load from local cache works (no re-download required)",
+        )
+    except Exception as exc:
+        assert_true(
+            False,
+            f"Offline load from local cache failed: {type(exc).__name__}: {exc}",
+        )
+    finally:
+        if previous_hf_offline is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = previous_hf_offline
+
+        if previous_transformers_offline is None:
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+        else:
+            os.environ["TRANSFORMERS_OFFLINE"] = previous_transformers_offline
 else:
     print("  sentence-transformers NOT installed, skipping real model tests")
     print("  Install with: pip install sentence-transformers")

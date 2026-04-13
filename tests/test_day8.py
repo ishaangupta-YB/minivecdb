@@ -354,3 +354,37 @@ class TestMultipleCycles:
         assert store2.count() == 1
         assert store2.get("ctx_001").text == "context data"
         store2.close()
+
+
+class TestManagedRunDefaults:
+    """Verify managed db_run defaults preserve persistence expectations."""
+
+    def test_default_run_reused_across_reopen(self, tmp_path, monkeypatch):
+        """VectorStore() should reopen the same active run by default."""
+        monkeypatch.setenv("MINIVECDB_PROJECT_ROOT", str(tmp_path))
+
+        with VectorStore() as store:
+            store.embedding_engine = SimpleEmbeddingEngine(dimension=384)
+            run_path = store.storage_path
+            store.insert("managed persistence", id="managed_001")
+
+        with VectorStore() as reopened:
+            assert reopened.storage_path == run_path
+            record = reopened.get("managed_001")
+            assert record is not None
+            assert record.text == "managed persistence"
+
+    def test_new_run_creates_isolated_dataset(self, tmp_path, monkeypatch):
+        """new_run=True should switch to a clean run directory."""
+        monkeypatch.setenv("MINIVECDB_PROJECT_ROOT", str(tmp_path))
+
+        with VectorStore() as store:
+            store.embedding_engine = SimpleEmbeddingEngine(dimension=384)
+            first_run = store.storage_path
+            store.insert("first run record", id="run_a")
+
+        with VectorStore(new_run=True) as second_store:
+            second_store.embedding_engine = SimpleEmbeddingEngine(dimension=384)
+            second_run = second_store.storage_path
+            assert second_run != first_run
+            assert second_store.get("run_a") is None

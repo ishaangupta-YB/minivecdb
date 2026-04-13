@@ -44,6 +44,8 @@ import warnings
 import os
 import logging
 
+from core.runtime_paths import get_model_cache_path
+
 # ═══════════════════════════════════════════════════════════════
 # TYPE ALIAS
 # ═══════════════════════════════════════════════════════════════
@@ -83,7 +85,11 @@ class EmbeddingEngine:
     DEFAULT_MODEL = "all-MiniLM-L6-v2"
     DEFAULT_DIMENSION = 384
     
-    def __init__(self, model_name: Optional[str] = None):
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        cache_folder: Optional[str] = None,
+    ):
         """
         Initialise the embedding engine.
         
@@ -94,11 +100,26 @@ class EmbeddingEngine:
                          - "all-mpnet-base-v2" (768 dims, more accurate)
                          - "all-MiniLM-L12-v2" (384 dims, slightly better)
                          - "paraphrase-MiniLM-L3-v2" (384 dims, fastest)
+            cache_folder: Optional cache directory for Hugging Face files.
+                         If omitted, uses project-local cache at
+                         ./db_run/model_cache/huggingface.
         """
         self.model_name = model_name or self.DEFAULT_MODEL
         self.dimension = self.DEFAULT_DIMENSION
+        self.cache_folder = cache_folder
         self._model = None       # Lazy loading: model loads on first use
         self._is_available = None # Whether sentence-transformers is installed
+
+    def _resolve_cache_folder(self) -> str:
+        """Resolve and create the cache directory for model downloads."""
+        if self.cache_folder is None:
+            resolved = get_model_cache_path()
+        else:
+            resolved = os.path.abspath(os.path.expanduser(self.cache_folder))
+            os.makedirs(resolved, exist_ok=True)
+
+        self.cache_folder = resolved
+        return resolved
     
     @property
     def is_loaded(self) -> bool:
@@ -126,7 +147,7 @@ class EmbeddingEngine:
         
         This is called automatically on the first encode() call.
         The model download happens only once — subsequent runs
-        load from the local cache (~/.cache/huggingface/).
+        load from the configured local cache folder.
         
         This is an example of "lazy loading" — we don't load the
         model when EmbeddingEngine() is created, but when it's
@@ -142,6 +163,8 @@ class EmbeddingEngine:
                 "Install it with: pip install sentence-transformers\n"
                 "This is required for converting text to vectors."
             )
+
+        cache_folder = self._resolve_cache_folder()
         
         # Keep third-party loader chatter quiet in self-tests/examples.
         logging.getLogger("transformers").setLevel(logging.ERROR)
@@ -153,10 +176,19 @@ class EmbeddingEngine:
         
         print(f"Loading embedding model '{self.model_name}'...")
         print("(First run downloads ~80 MB. Subsequent runs use cache.)")
+        print(f"(Cache folder: {cache_folder})")
         
         # Load the model. On first run, this downloads from HuggingFace.
-        # On subsequent runs, it loads from ~/.cache/huggingface/
-        self._model = SentenceTransformer(self.model_name)
+        # On subsequent runs, it loads from the configured cache folder.
+        try:
+            self._model = SentenceTransformer(
+                self.model_name,
+                cache_folder=cache_folder,
+            )
+        except TypeError:
+            # Compatibility for older sentence-transformers signatures.
+            os.environ.setdefault("HF_HOME", cache_folder)
+            self._model = SentenceTransformer(self.model_name)
         
         # Update dimension based on actual model output
         # (in case a different model was specified).
@@ -285,6 +317,7 @@ class EmbeddingEngine:
             "dimension": self.dimension,
             "is_loaded": self.is_loaded,
             "is_available": self._check_availability(),
+            "cache_folder": self.cache_folder,
         }
 
 
@@ -420,7 +453,8 @@ class SimpleEmbeddingEngine:
 
 def create_embedding_engine(
     model_name: Optional[str] = None,
-    fallback: bool = True
+    fallback: bool = True,
+    cache_folder: Optional[str] = None,
 ) -> Union[EmbeddingEngine, SimpleEmbeddingEngine]:
     """
     Create the best available embedding engine.
@@ -433,6 +467,7 @@ def create_embedding_engine(
         model_name: Optional model name for EmbeddingEngine
         fallback:   If True, use SimpleEmbeddingEngine when
                    sentence-transformers is unavailable.
+        cache_folder: Optional Hugging Face cache folder for EmbeddingEngine.
     
     Returns:
         Either an EmbeddingEngine or SimpleEmbeddingEngine instance.
@@ -442,7 +477,7 @@ def create_embedding_engine(
         >>> vec = engine.encode("Hello world")
     """
     # Try the real engine first
-    engine = EmbeddingEngine(model_name)
+    engine = EmbeddingEngine(model_name=model_name, cache_folder=cache_folder)
     
     if engine._check_availability():
         return engine

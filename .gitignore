@@ -23,11 +23,12 @@ dist/
 .env.*
 
 # MiniVecDB generated storage artifacts
+db_run/
 *.db
 *.sqlite
 *.sqlite3
-vectors.npy
-id_mapping.json
+vectors.npy*
+id_mapping.json*
 
 # macOS
 .DS_Store

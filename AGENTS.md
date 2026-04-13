@@ -10,15 +10,20 @@ You are building **MiniVecDB**, a mini vector database from scratch in Python fo
 - **SQLite** (`sqlite3`, built-in) → stores structured data: records table, metadata table (EAV pattern), collections table. All SQL queries use parameterised `?` placeholders. Foreign keys with `ON DELETE CASCADE` for data integrity. `PRAGMA foreign_keys = ON` always.
 - **NumPy** (`.npy` files) → stores vector embeddings as a `(N, 384)` float32 matrix. The matrix enables fast batch similarity computation via `matrix @ query_vector`.
 - **Bridge** (`id_mapping.json`) → ordered list mapping NumPy row index → record ID in SQLite. `_id_list[i]` is the ID of the vector at `_vectors[i]`.
-- **Embedding** → `sentence-transformers` library, model `all-MiniLM-L6-v2`, produces 384-dim float32 vectors. Include `SimpleEmbeddingEngine` fallback (bag-of-words) when sentence-transformers unavailable.
+- **Embedding** → `sentence-transformers` library, model `all-MiniLM-L6-v2`, produces 384-dim float32 vectors. Use `cache_folder` rooted in the project at `db_run/model_cache/huggingface`. Include `SimpleEmbeddingEngine` fallback (bag-of-words) when sentence-transformers unavailable.
 - **Search** → built from scratch. Brute-force exact KNN. Three metrics: cosine similarity (default), euclidean distance, dot product. All implemented in `distance_metrics.py` using NumPy. Pre-filter via SQL metadata queries, THEN compute similarity only on filtered candidates.
 
 **Disk layout:**
 ```
-storage_path/
-├── minivecdb.db       ← SQLite database
-├── vectors.npy        ← NumPy array (N, 384) float32
-└── id_mapping.json    ← row index → record ID mapping
+project_root/
+└── db_run/
+    ├── .active_run                        ← current default run marker
+    ├── model_cache/
+    │   └── huggingface/                   ← SentenceTransformer cache
+    └── demo_<timestamp>_<random>/
+        ├── minivecdb.db                   ← SQLite database
+        ├── vectors.npy                    ← NumPy array (N, 384) float32
+        └── id_mapping.json                ← row index → record ID mapping
 ```
 
 ## Project Structure

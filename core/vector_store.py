@@ -35,6 +35,7 @@ import os
 import json
 import time
 import logging
+import shutil
 import numpy as np
 from typing import Optional, Dict, Any, List, Set
 
@@ -51,6 +52,13 @@ from ARCHITECTURE import (
     VectorRecord, SearchResult, CollectionInfo, DatabaseStats, generate_id,
 )
 from core.embeddings import create_embedding_engine
+from core.runtime_paths import (
+    get_model_cache_path,
+    get_project_root,
+    read_active_run_path,
+    resolve_storage_path,
+    create_new_run_path,
+)
 from core.distance_metrics import get_metric
 from storage.database import DatabaseManager
 
@@ -85,58 +93,107 @@ class VectorStore:
     # Default configuration constants
     DEFAULT_COLLECTION = "default"
     DEFAULT_DIMENSION = 384
+    DEFAULT_RUN_PREFIX = "demo"
 
     def __init__(
         self,
-        storage_path: str = "./vectorstore_data",
+        storage_path: Optional[str] = None,
         collection_name: str = "default",
         dimension: int = 384,
         embedding_model: Optional[str] = None,
+        new_run: bool = False,
+        run_prefix: str = DEFAULT_RUN_PREFIX,
+        model_cache_path: Optional[str] = None,
     ) -> None:
         """
         Initialise the VectorStore.
 
-        This constructor does quite a lot:
-          1. Creates the storage directory if it doesn't exist.
-          2. Opens a SQLite connection via DatabaseManager.
-          3. Ensures the default collection exists in SQLite.
-          4. Initialises the embedding engine (with fallback).
-          5. Loads any previously saved vectors from disk.
+                This constructor does quite a lot:
+                    1. Resolves the storage directory (managed db_run path by default).
+                    2. Creates the storage directory if it doesn't exist.
+                    3. Opens a SQLite connection via DatabaseManager.
+                    4. Ensures the default collection exists in SQLite.
+                    5. Initialises the embedding engine (with fallback).
+                    6. Loads any previously saved vectors from disk.
 
         Args:
             storage_path:    Directory to store all data files.
-                             Will be created if it doesn't exist.
-                             Example: "./my_data"
+                             If None, uses managed project storage under
+                             ./db_run/<run_name> and reuses active run.
+                             Example explicit path: "./my_data"
             collection_name: Default collection name for inserts.
                              Default: "default"
             dimension:       Dimensionality of vectors.
                              Must match the embedding model (384).
             embedding_model: Optional model name override.
                              Default None uses "all-MiniLM-L6-v2".
+            new_run:         If True and storage_path is None, force a
+                             fresh unique run directory in ./db_run/.
+            run_prefix:      Prefix for managed run directories.
+                             Default: "demo"
+            model_cache_path:Optional embedding model cache path.
+                             If None, uses ./db_run/model_cache/huggingface.
 
         Raises:
             ValueError: If configuration values are invalid.
             ValueError: If persisted SQLite/vector state is inconsistent.
         """
-        self._require_non_empty_string(storage_path, "storage_path")
+        if storage_path is not None:
+            self._require_non_empty_string(storage_path, "storage_path")
         self._require_non_empty_string(collection_name, "collection_name")
+        self._require_non_empty_string(run_prefix, "run_prefix")
         if not isinstance(dimension, int) or dimension <= 0:
             raise ValueError("dimension must be a positive integer.")
 
+        # Resolve storage path.
+        # Default behavior uses managed project storage under ./db_run and
+        # reuses the active run directory across CLI commands.
+        if storage_path is None and not new_run:
+            active_run = read_active_run_path()
+            if active_run is None:
+                migrated = self._maybe_migrate_legacy_storage(run_prefix=run_prefix)
+                if migrated is not None:
+                    resolved_storage_path = migrated
+                else:
+                    resolved_storage_path = resolve_storage_path(
+                        storage_path=None,
+                        create_new_run=False,
+                        run_prefix=run_prefix,
+                    )
+            else:
+                resolved_storage_path = active_run
+        else:
+            resolved_storage_path = resolve_storage_path(
+                storage_path=storage_path,
+                create_new_run=(new_run and storage_path is None),
+                run_prefix=run_prefix,
+            )
+
+        if model_cache_path is not None:
+            self._require_non_empty_string(model_cache_path, "model_cache_path")
+            resolved_cache_path = os.path.abspath(
+                os.path.expanduser(model_cache_path)
+            )
+            os.makedirs(resolved_cache_path, exist_ok=True)
+        else:
+            resolved_cache_path = get_model_cache_path()
+
         # Store configuration for later use.
-        self.storage_path: str = storage_path
+        self.storage_path: str = os.path.abspath(resolved_storage_path)
         self.collection_name: str = collection_name
         self.dimension: int = dimension
+        self.run_prefix: str = run_prefix
+        self.model_cache_path: str = resolved_cache_path
 
         # --- Step 1: Create storage directory ---
         # os.makedirs with exist_ok=True is safe to call repeatedly.
         # It creates the directory and any parent directories needed,
         # and does nothing if the directory already exists.
-        os.makedirs(storage_path, exist_ok=True)
+        os.makedirs(self.storage_path, exist_ok=True)
 
         # --- Step 2: Initialise SQLite via DatabaseManager ---
         # The database file lives inside our storage directory.
-        db_path = os.path.join(storage_path, "minivecdb.db")
+        db_path = os.path.join(self.storage_path, "minivecdb.db")
         self.db: DatabaseManager = DatabaseManager(db_path)
 
         # --- Step 3: Ensure default collection exists ---
@@ -154,6 +211,7 @@ class VectorStore:
         self.embedding_engine = create_embedding_engine(
             model_name=embedding_model,
             fallback=True,
+            cache_folder=self.model_cache_path,
         )
 
         # --- Step 5: Initialise in-memory vector storage ---
@@ -200,6 +258,58 @@ class VectorStore:
         """Validate that top_k is a positive integer value."""
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
             raise ValueError("top_k must be a positive integer.")
+
+    @staticmethod
+    def _maybe_migrate_legacy_storage(run_prefix: str) -> Optional[str]:
+        """Migrate old default storage folders into managed db_run storage.
+
+        This preserves existing user data when upgrading from earlier
+        defaults that used ./minivecdb_data or ./vectorstore_data.
+        """
+        project_root = get_project_root()
+        legacy_dirs = (
+            os.path.join(project_root, "minivecdb_data"),
+            os.path.join(project_root, "vectorstore_data"),
+        )
+        required_files = ("minivecdb.db", "vectors.npy", "id_mapping.json")
+        optional_files = ("vectors.npy.tmp", "id_mapping.json.tmp")
+
+        for legacy_dir in legacy_dirs:
+            if not os.path.isdir(legacy_dir):
+                continue
+
+            has_runtime_files = any(
+                os.path.exists(os.path.join(legacy_dir, filename))
+                for filename in required_files
+            )
+            if not has_runtime_files:
+                continue
+
+            target_dir = create_new_run_path(prefix=run_prefix)
+            try:
+                for filename in required_files + optional_files:
+                    source_path = os.path.join(legacy_dir, filename)
+                    if os.path.isfile(source_path):
+                        shutil.copy2(
+                            source_path,
+                            os.path.join(target_dir, filename),
+                        )
+            except Exception as exc:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise ValueError(
+                    "Failed to migrate legacy storage from "
+                    f"{legacy_dir!r} into managed db_run storage. "
+                    "Pass an explicit storage_path (or --db-path) to continue."
+                ) from exc
+
+            logger.info(
+                "Migrated legacy storage from %s to %s",
+                legacy_dir,
+                target_dir,
+            )
+            return target_dir
+
+        return None
 
     def _rebuild_id_index(self) -> None:
         """Rebuild O(1) ID to row-index mapping from the ID list."""

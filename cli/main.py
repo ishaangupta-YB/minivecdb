@@ -446,7 +446,7 @@ def cmd_import_file(args: argparse.Namespace, store: VectorStore) -> None:
 # pip (pip install, pip freeze, etc.).
 #
 # Structure:
-#   1. Create a top-level parser with global options (--db-path).
+#   1. Create a top-level parser with global options.
 #   2. Add a subparser group for commands.
 #   3. For each command, add arguments and set a handler function.
 # ===============================================================
@@ -466,13 +466,42 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Example: python cli/main.py insert --text \"Hello world\"",
     )
 
-    # Global option: --db-path controls where data files are stored.
-    # Every subcommand inherits this because it's on the top-level parser.
+    # Global options for storage/cache behavior.
+    # Every subcommand inherits these because they are on top-level parser.
     parser.add_argument(
         "--db-path",
         type=str,
-        default="./minivecdb_data",
-        help="Path to the database storage directory (default: ./minivecdb_data)",
+        default=None,
+        help=(
+            "Explicit storage directory. If omitted, MiniVecDB uses "
+            "managed storage under ./db_run/ and reuses the active run."
+        ),
+    )
+    parser.add_argument(
+        "--new-run",
+        action="store_true",
+        help=(
+            "Force a new unique run directory under ./db_run/ "
+            "(ignored when --db-path is provided)."
+        ),
+    )
+    parser.add_argument(
+        "--run-prefix",
+        type=str,
+        default="demo",
+        help=(
+            "Prefix for managed run directory names "
+            "(default: demo -> demo_<timestamp>_<random>)."
+        ),
+    )
+    parser.add_argument(
+        "--model-cache-path",
+        type=str,
+        default=None,
+        help=(
+            "Optional embedding model cache directory. "
+            "Default is ./db_run/model_cache/huggingface."
+        ),
     )
 
     # --- Subcommand group ---
@@ -642,12 +671,12 @@ def main() -> None:
     """
     Parse CLI arguments, open the VectorStore, run the command.
 
-    The flow is:
-      1. Parse command-line arguments with argparse.
-      2. Open a VectorStore pointing at --db-path.
-      3. Dispatch to the appropriate command handler.
-      4. Close the VectorStore (always, even on error).
-      5. If any error occurs, print a friendly message and exit.
+        The flow is:
+            1. Parse command-line arguments with argparse.
+            2. Open a VectorStore using explicit --db-path or managed db_run.
+            3. Dispatch to the appropriate command handler.
+            4. Close the VectorStore (always, even on error).
+            5. If any error occurs, print a friendly message and exit.
     """
     parser = build_parser()
     args = parser.parse_args()
@@ -662,7 +691,15 @@ def main() -> None:
     # an exception occurs.  This saves vectors to disk and releases
     # the SQLite connection.
     try:
-        with VectorStore(storage_path=args.db_path) as store:
+        if args.db_path is not None and args.new_run:
+            print("Note: --new-run ignored because --db-path was provided.")
+
+        with VectorStore(
+            storage_path=args.db_path,
+            new_run=args.new_run,
+            run_prefix=args.run_prefix,
+            model_cache_path=args.model_cache_path,
+        ) as store:
             # Dispatch to the command handler function.
             # Each subparser has a `handler` default set via set_defaults().
             args.handler(args, store)

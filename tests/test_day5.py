@@ -25,6 +25,7 @@ WHAT THESE TESTS VERIFY:
 """
 
 import os
+import re
 import sys
 import time
 
@@ -539,3 +540,59 @@ class TestVectorStoreIntegrity:
 
         with pytest.raises(RuntimeError, match="Data integrity error"):
             tmp_store.get(rid)
+
+
+class TestManagedStorageDefaults:
+    """Verify default managed storage behavior under project-root db_run/."""
+
+    def test_default_path_uses_db_run(self, tmp_path, monkeypatch):
+        """VectorStore() with no path should use a managed db_run run folder."""
+        monkeypatch.setenv("MINIVECDB_PROJECT_ROOT", str(tmp_path))
+
+        with VectorStore() as store:
+            db_run_root = os.path.join(str(tmp_path), "db_run")
+            assert store.storage_path.startswith(db_run_root)
+
+            run_name = os.path.basename(store.storage_path)
+            assert re.match(r"^demo_\d+_[0-9a-f]{6}$", run_name)
+
+            marker_path = os.path.join(db_run_root, ".active_run")
+            assert os.path.exists(marker_path)
+
+            expected_cache = os.path.join(
+                db_run_root,
+                "model_cache",
+                "huggingface",
+            )
+            assert store.model_cache_path == os.path.abspath(expected_cache)
+            assert os.path.isdir(store.model_cache_path)
+
+    def test_active_run_reused_by_default(self, tmp_path, monkeypatch):
+        """Two default opens should resolve to the same active run folder."""
+        monkeypatch.setenv("MINIVECDB_PROJECT_ROOT", str(tmp_path))
+
+        with VectorStore() as store1:
+            first_path = store1.storage_path
+
+        with VectorStore() as store2:
+            second_path = store2.storage_path
+
+        assert first_path == second_path
+
+    def test_new_run_creates_unique_folder(self, tmp_path, monkeypatch):
+        """new_run=True should create a fresh managed folder and switch active marker."""
+        monkeypatch.setenv("MINIVECDB_PROJECT_ROOT", str(tmp_path))
+
+        with VectorStore() as store1:
+            first_path = store1.storage_path
+
+        with VectorStore(new_run=True) as store2:
+            second_path = store2.storage_path
+
+        assert first_path != second_path
+
+        marker_path = os.path.join(str(tmp_path), "db_run", ".active_run")
+        with open(marker_path, "r", encoding="utf-8") as marker_file:
+            active_name = marker_file.read().strip()
+
+        assert active_name == os.path.basename(second_path)

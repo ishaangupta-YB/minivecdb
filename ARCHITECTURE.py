@@ -106,10 +106,15 @@ def generate_id(prefix="vec"):
 
 # ═══════════════════════════════════════════════════════════════
 # DISK LAYOUT:
-#   storage_path/
-#   ├── minivecdb.db       <- SQLite (records, metadata, collections)
-#   ├── vectors.npy        <- NumPy array (N, 384) float32
-#   └── id_mapping.json    <- list mapping matrix row -> record ID
+#   project_root/
+#   └── db_run/
+#       ├── .active_run                     <- active managed run marker
+#       ├── model_cache/
+#       │   └── huggingface/                <- SentenceTransformer cache
+#       └── demo_<timestamp>_<random>/
+#           ├── minivecdb.db                <- SQLite records/metadata
+#           ├── vectors.npy                 <- NumPy array (N, 384) float32
+#           └── id_mapping.json             <- row index -> record ID
 # ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
