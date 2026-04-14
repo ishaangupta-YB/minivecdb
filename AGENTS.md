@@ -11,6 +11,7 @@ You are building **MiniVecDB**, a mini vector database from scratch in Python fo
 - **NumPy** (`.npy` files) → stores vector embeddings as a `(N, 384)` float32 matrix. The matrix enables fast batch similarity computation via `matrix @ query_vector`.
 - **Bridge** (`id_mapping.json`) → ordered list mapping NumPy row index → record ID in SQLite. `_id_list[i]` is the ID of the vector at `_vectors[i]`.
 - **Embedding** → `sentence-transformers` library, model `all-MiniLM-L6-v2`, produces 384-dim float32 vectors. Use `cache_folder` rooted in the project at `db_run/model_cache/huggingface`. Include `SimpleEmbeddingEngine` fallback (bag-of-words) when sentence-transformers unavailable.
+- **Runtime path manager** → `core/runtime_paths.py` controls project-root path resolution, active run selection, unique run naming (`demo_<timestamp>_<random>`), and cache path creation.
 - **Search** → built from scratch. Brute-force exact KNN. Three metrics: cosine similarity (default), euclidean distance, dot product. All implemented in `distance_metrics.py` using NumPy. Pre-filter via SQL metadata queries, THEN compute similarity only on filtered candidates.
 
 **Disk layout:**
@@ -26,6 +27,11 @@ project_root/
         └── id_mapping.json                ← row index → record ID mapping
 ```
 
+Default behavior:
+- If `storage_path` / `--db-path` is not provided, MiniVecDB reuses the run in `db_run/.active_run`.
+- `--new-run` creates a fresh unique run folder and updates `.active_run`.
+- Legacy folders (`./minivecdb_data`, `./vectorstore_data`) are migrated into `db_run/` when needed.
+
 ## Project Structure
 
 ```
@@ -37,13 +43,13 @@ minivecdb/
 │   ├── __init__.py
 │   ├── distance_metrics.py # 3 similarity metrics (cosine, euclidean, dot) + batch versions
 │   ├── embeddings.py       # EmbeddingEngine + SimpleEmbeddingEngine + factory
+│   ├── runtime_paths.py    # Managed run folders + active run marker + cache paths
 │   ├── vector_store.py     # Main VectorStore class (the heart of the project)
-│   └── collections.py      # Collection management helpers (optional, can be in vector_store)
 ├── storage/
 │   ├── __init__.py
 │   └── database.py         # SQLite wrapper: init schema, execute queries, close
 ├── cli/
-│   └── main.py             # argparse CLI: insert, search, delete, list, stats commands
+│   └── main.py             # argparse CLI: insert/search/delete/list/stats + --new-run/--run-prefix/--model-cache-path
 ├── web/
 │   ├── app.py              # Flask web app with search UI
 │   └── templates/
@@ -94,6 +100,7 @@ Three tables: `collections` (name PK), `records` (id PK, FK→collections), `met
 - **No external vector DB libraries:** Never use ChromaDB, FAISS, Pinecone, Weaviate, or any vector database library. The vector search is built from scratch. Only allowed libraries: numpy, sentence-transformers, flask, sqlite3 (built-in), pytest, json, os, time, uuid, argparse, dataclasses, typing.
 - **Float32:** All vectors stored as `np.float32` to save memory.
 - **Auto-save:** After every insert/delete/update, save `vectors.npy` and `id_mapping.json`. SQLite auto-commits.
+- **Runtime artifacts:** Keep all generated runtime files inside `db_run/` and ensure `db_run/` stays in `.gitignore`.
 
 ## Critical Constraints
 
