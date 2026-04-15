@@ -1,0 +1,70 @@
+{% extends "_base.html" %}
+{% block title %}MiniVecDB &mdash; Search{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2 style="margin-top:0;">Semantic search</h2>
+    <p class="meta">
+      Session <code>{{ stats.session_name }}</code> &middot;
+      {{ stats.total_records }} documents across
+      {{ stats.total_collections }} collection(s).
+    </p>
+
+    {% if stats.total_records == 0 %}
+      <div class="ok">
+        This session is empty. Use
+        <a href="{{ url_for('insert') }}">Insert</a> to add documents.
+      </div>
+    {% endif %}
+
+    <form action="{{ url_for('search') }}" method="post">
+      <div style="margin-bottom: 0.75rem;">
+        <label for="query">Query</label>
+        <input
+          type="text"
+          id="query"
+          name="query"
+          placeholder="e.g. how does artificial intelligence work?"
+          autofocus
+          required
+        >
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="metric">Metric</label>
+          <select id="metric" name="metric">
+            <option value="cosine" selected>cosine</option>
+            <option value="euclidean">euclidean</option>
+            <option value="dot">dot</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="top_k">Top K</label>
+          <input type="number" id="top_k" name="top_k"
+                 value="5" min="1" max="50">
+        </div>
+
+        <div>
+          <label for="category">Category filter</label>
+          <select id="category" name="category">
+            <option value="">(any)</option>
+            {% for cat in categories %}
+              <option value="{{ cat }}">{{ cat }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-top: 1.5rem;">
+        <button type="submit">
+          <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          Search
+        </button>
+      </div>
+    </form>
+  </div>
+{% endblock %}

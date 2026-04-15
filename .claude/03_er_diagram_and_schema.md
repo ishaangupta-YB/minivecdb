@@ -1,119 +1,186 @@
-# MiniVecDB — ER Diagram & Database Schema
+# MiniVecDB — ER Diagram & Database Schema (v3.0)
 
 ## Entity-Relationship Diagram
 
-The SQLite database uses **3 tables** connected by foreign keys with cascade deletes:
+The v3.0 SQLite schema uses **6 tables** connected by foreign keys with cascade deletes, plus **3 triggers** for automation:
 
 ```
-┌─────────────────────┐           ┌─────────────────────────┐
-│    collections      │           │       records            │
-│─────────────────────│           │─────────────────────────│
-│ PK name      TEXT   │◄──────────│ PK id         TEXT       │
-│    dimension  INT   │  1:N FK   │    text       TEXT       │
-│    description TEXT │  cascade  │ FK collection TEXT       │
-│    created_at REAL  │           │    created_at REAL       │
-└─────────────────────┘           └────────────┬────────────┘
-                                               │
-                                               │ 1:N FK
-                                               │ cascade
-                                               ▼
-                                  ┌─────────────────────────┐
-                                  │      metadata            │
-                                  │─────────────────────────│
-                                  │ PK id         INT AUTO   │
-                                  │ FK record_id  TEXT       │
-                                  │    key        TEXT       │
-                                  │    value      TEXT       │
-                                  └─────────────────────────┘
+┌──────────────────────────┐
+│        sessions           │           ┌──────────────────────────────┐
+│──────────────────────────│           │       conversations            │
+│ PK id       INTEGER AUTO │──────1:N──│──────────────────────────────│
+│    name     TEXT UNIQUE  │           │ PK id         INTEGER AUTO    │
+│    storage_path TEXT     │           │ FK session_id  INTEGER        │
+│    created_at   REAL     │           │    title       TEXT           │
+│    last_used_at REAL     │           │    created_at  REAL           │
+└──────────┬───────────────┘           └──────────────┬───────────────┘
+           │                                          │
+           │ 1:N                                      │ 1:N
+           ▼                                          ▼
+┌──────────────────────────┐           ┌──────────────────────────────┐
+│      collections          │           │        messages                │
+│──────────────────────────│           │──────────────────────────────│
+│ PK id       INTEGER AUTO │           │ PK id              INT AUTO  │
+│ FK session_id INTEGER    │           │ FK conversation_id INTEGER   │
+│    name      TEXT        │           │    kind            TEXT      │
+│    dimension  INTEGER    │           │    query_text      TEXT      │
+│    description TEXT      │           │    metric          TEXT      │
+│    created_at REAL       │           │    top_k           INTEGER   │
+│  UNIQUE(session_id,name) │           │    category_filter TEXT      │
+└──────────┬───────────────┘           │    result_count    INTEGER   │
+           │                            │    elapsed_ms      REAL      │
+           │ 1:N                        │    response_ref    TEXT      │
+           ▼                            │    created_at      REAL      │
+┌──────────────────────────┐           └──────────────────────────────┘
+│       records             │
+│──────────────────────────│
+│ PK id       TEXT         │
+│ FK session_id   INTEGER  │
+│ FK collection_id INTEGER │
+│    text         TEXT     │
+│    created_at   REAL     │
+└──────────┬───────────────┘
+           │
+           │ 1:N
+           ▼
+┌──────────────────────────┐
+│       metadata            │
+│──────────────────────────│
+│ PK id       INTEGER AUTO │
+│ FK record_id TEXT        │
+│    key       TEXT        │
+│    value     TEXT        │
+└──────────────────────────┘
 ```
 
 ---
 
-## Table Definitions
+## Table Definitions (6 Tables)
 
-### 1. `collections` — Groups of Related Records
+### 1. `sessions` — One Row Per Run Folder
+
+```sql
+CREATE TABLE IF NOT EXISTS sessions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL UNIQUE,
+    storage_path  TEXT    NOT NULL,
+    created_at    REAL    NOT NULL,
+    last_used_at  REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_used ON sessions(last_used_at DESC);
+```
+
+**Purpose**: Tracks every session (run folder) in the system. The `name` is the folder name (e.g., `demo_1713052800_a1b2c3`) and is `UNIQUE`. The shared DB holds all sessions.
+
+**Key points**:
+- `last_used_at` is bumped automatically by `trg_touch_session_on_message` trigger
+- Deleting a session cascades to ALL child rows (conversations, messages, collections, records, metadata)
+
+### 2. `conversations` — One Default Per Session
+
+```sql
+CREATE TABLE IF NOT EXISTS conversations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL,
+    title       TEXT    NOT NULL DEFAULT 'Default conversation',
+    created_at  REAL    NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+```
+
+**Purpose**: Every session gets one "Default conversation" auto-created by trigger. Conversations group messages. Designed for future multi-conversation support.
+
+### 3. `messages` — Chat History (User Queries Only)
+
+```sql
+CREATE TABLE IF NOT EXISTS messages (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id  INTEGER NOT NULL,
+    kind             TEXT    NOT NULL CHECK (kind IN ('search','insert')),
+    query_text       TEXT    NOT NULL,
+    metric           TEXT    CHECK (metric IS NULL OR metric IN ('cosine','euclidean','dot')),
+    top_k            INTEGER,
+    category_filter  TEXT,
+    result_count     INTEGER,
+    elapsed_ms       REAL,
+    response_ref     TEXT,
+    created_at       REAL    NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+```
+
+**Purpose**: Stores **user queries only** — never per-result rows. Response metadata (`result_count`, `elapsed_ms`, `response_ref`) sits on the same row. `kind` is CHECK-constrained to `'search'` or `'insert'`.
+
+### 4. `collections` — Session-Scoped via Composite UNIQUE
 
 ```sql
 CREATE TABLE IF NOT EXISTS collections (
-    name        TEXT PRIMARY KEY,     -- Unique collection identifier (e.g., "science_papers")
-    dimension   INTEGER NOT NULL DEFAULT 384,  -- Vector dimensions (matches embedding model)
-    description TEXT DEFAULT '',      -- Human-readable description
-    created_at  REAL NOT NULL         -- Unix timestamp of creation
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL,
+    name        TEXT    NOT NULL,
+    dimension   INTEGER NOT NULL DEFAULT 384,
+    description TEXT    DEFAULT '',
+    created_at  REAL    NOT NULL,
+    UNIQUE (session_id, name),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 ```
 
-**Purpose**: Collections work like folders — they group related records. Every record belongs to exactly one collection. A `"default"` collection is auto-created via an `INSERT OR IGNORE` in the schema.
+**Purpose**: Collections are now **session-scoped** — two different sessions can each have a collection named "papers" without collision. Uses a composite `UNIQUE(session_id, name)` constraint. Surrogate INTEGER PK (`id`) replaces the old TEXT PK.
 
-**Key points**:
-- `name` is the PRIMARY KEY (no auto-increment integer — the name IS the unique identifier)
-- `dimension` defaults to 384 (matching the all-MiniLM-L6-v2 model)
-- The `"default"` collection is always present and cannot be deleted
-
-### 2. `records` — The Core Data Table
+### 5. `records` — One Row Per Stored Document
 
 ```sql
 CREATE TABLE IF NOT EXISTS records (
-    id          TEXT PRIMARY KEY,     -- Unique record ID (e.g., "vec_a1b2c3d4")
-    text        TEXT NOT NULL,        -- The original text that was embedded
-    collection  TEXT NOT NULL DEFAULT 'default',  -- Which collection this belongs to
-    created_at  REAL NOT NULL,        -- Unix timestamp
-    FOREIGN KEY (collection) REFERENCES collections(name) ON DELETE CASCADE
+    id             TEXT    PRIMARY KEY,
+    session_id     INTEGER NOT NULL,
+    collection_id  INTEGER NOT NULL,
+    text           TEXT    NOT NULL,
+    created_at     REAL    NOT NULL,
+    FOREIGN KEY (session_id)    REFERENCES sessions(id)    ON DELETE CASCADE,
+    FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_records_collection ON records(collection);
 ```
 
-**Purpose**: Stores the structured part of each record — the text, its collection membership, and creation time. The *vector* is NOT stored here (it's in NumPy).
+**Purpose**: Stores the structured part of each record. The vector is in NumPy. Records now have **TWO foreign keys**: `session_id` for session-scoping and `collection_id` for collection membership (using the surrogate INTEGER PK from collections).
 
-**Key points**:
-- `id` is a generated string like `"vec_a1b2c3d4"` (UUID v4 hex prefix)
-- `ON DELETE CASCADE`: if a collection is deleted, all its records are automatically deleted
-- The `idx_records_collection` index speeds up `WHERE collection=?` queries
-
-### 3. `metadata` — EAV (Entity-Attribute-Value) Tags
+### 6. `metadata` — EAV Key/Value Tags
 
 ```sql
 CREATE TABLE IF NOT EXISTS metadata (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,  -- Auto-generated row ID
-    record_id   TEXT NOT NULL,        -- Which record this tag belongs to
-    key         TEXT NOT NULL,         -- Tag name (e.g., "category", "author")
-    value       TEXT NOT NULL,         -- Tag value (e.g., "science", "Einstein")
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_id  TEXT    NOT NULL,
+    key        TEXT    NOT NULL,
+    value      TEXT    NOT NULL,
     FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_metadata_kv ON metadata(key, value);
-CREATE INDEX IF NOT EXISTS idx_metadata_record ON metadata(record_id);
 ```
 
-**Purpose**: Stores arbitrary key-value tags for each record. Uses the **EAV (Entity-Attribute-Value) pattern** which allows different records to have completely different tags without altering the schema.
-
-**Why EAV?**: One record might have `{"category": "science"}` while another has `{"language": "french", "topic": "cooking"}`. A fixed-column approach would need columns for every possible key. EAV is flexible.
-
-**Key points**:
-- `ON DELETE CASCADE`: if a record is deleted, all its metadata tags are automatically deleted
-- `idx_metadata_kv` speeds up metadata filtering (`WHERE key=? AND value=?`)
-- `idx_metadata_record` speeds up `WHERE record_id=?` lookups
-- All values are stored as TEXT (numeric comparisons use `CAST(value AS REAL)`)
+**Purpose**: Same EAV pattern as before. `ON DELETE CASCADE` from records.
 
 ---
 
-## Relationships
+## Triggers (3)
 
-### collections → records (1:N)
-- One collection can have many records
-- Each record belongs to exactly one collection
-- `ON DELETE CASCADE`: deleting a collection deletes all its records
-
-### records → metadata (1:N)
-- One record can have many metadata key-value pairs
-- Each metadata row belongs to exactly one record
-- `ON DELETE CASCADE`: deleting a record deletes all its metadata
-
-### Cascade Delete Chain
-Deleting a collection triggers a cascade:
+### `trg_create_default_conversation`
+```sql
+AFTER INSERT ON sessions → INSERT INTO conversations (session_id, title, created_at)
 ```
-DELETE collection "papers"
-  └→ DELETE records WHERE collection = "papers"  (cascade from collections)
-      └→ DELETE metadata WHERE record_id IN (...)  (cascade from records)
+Every new session automatically gets a "Default conversation" row.
+
+### `trg_create_default_collection`
+```sql
+AFTER INSERT ON sessions → INSERT INTO collections (session_id, name, dimension, description, created_at)
 ```
+Every new session automatically gets a `"default"` collection with dimension 384.
+
+### `trg_touch_session_on_message`
+```sql
+AFTER INSERT ON messages →
+  UPDATE sessions SET last_used_at = NEW.created_at
+   WHERE id = (SELECT session_id FROM conversations WHERE id = NEW.conversation_id)
+```
+Uses a **subquery** to resolve `session_id` from the message's `conversation_id`, then bumps the session's `last_used_at`. This means the session picker always shows the most recently used sessions first.
 
 ---
 
@@ -121,61 +188,52 @@ DELETE collection "papers"
 
 | Index Name | Table | Columns | Purpose |
 |-----------|-------|---------|---------|
-| `idx_records_collection` | records | (collection) | Fast lookup: "get all records in collection X" |
-| `idx_metadata_kv` | metadata | (key, value) | Fast filter: "find records where category=science" |
-| `idx_metadata_record` | metadata | (record_id) | Fast lookup: "get all metadata for record X" |
+| `idx_sessions_last_used` | sessions | (last_used_at DESC) | Fast ordering for session picker |
+| `idx_conv_session` | conversations | (session_id) | Fast lookup: conversations for a session |
+| `idx_msg_conv` | messages | (conversation_id) | Fast lookup: messages in a conversation |
+| `idx_msg_created` | messages | (created_at) | Timeline ordering |
+| `idx_collections_session` | collections | (session_id) | Fast lookup: collections in a session |
+| `idx_records_session` | records | (session_id) | Session-scoped record queries |
+| `idx_records_collection` | records | (collection_id) | Collection-filtered queries |
+| `idx_metadata_kv` | metadata | (key, value) | Metadata filtering |
+| `idx_metadata_record` | metadata | (record_id) | Get all metadata for a record |
 
 ---
 
-## SQL Queries (from ARCHITECTURE.py)
+## SQL Techniques Demonstrated
 
-All queries are defined centrally in `SQL_QUERIES` dict using parameterised `?` placeholders:
-
-### Record Operations
-| Query Key | SQL | Purpose |
-|-----------|-----|---------|
-| `insert_record` | `INSERT INTO records (id,text,collection,created_at) VALUES (?,?,?,?)` | Add a new record |
-| `get_record` | `SELECT id,text,collection,created_at FROM records WHERE id=?` | Fetch a record by ID |
-| `delete_record` | `DELETE FROM records WHERE id=?` | Remove a record |
-| `update_record_text` | `UPDATE records SET text=? WHERE id=?` | Change record text |
-| `record_exists` | `SELECT 1 FROM records WHERE id=? LIMIT 1` | Check if record exists |
-| `count_records` | `SELECT COUNT(*) FROM records WHERE collection=?` | Count records in collection |
-| `count_all_records` | `SELECT COUNT(*) FROM records` | Count all records |
-
-### Metadata Operations
-| Query Key | SQL | Purpose |
-|-----------|-----|---------|
-| `insert_metadata` | `INSERT INTO metadata (record_id,key,value) VALUES (?,?,?)` | Add a tag |
-| `get_metadata` | `SELECT key,value FROM metadata WHERE record_id=?` | Get all tags for a record |
-| `delete_metadata` | `DELETE FROM metadata WHERE record_id=?` | Remove all tags |
-| `filter_by_metadata` | `SELECT DISTINCT record_id FROM metadata WHERE key=? AND value=?` | Find matching records |
-
-### Collection Operations
-| Query Key | SQL | Purpose |
-|-----------|-----|---------|
-| `create_collection` | `INSERT INTO collections (name,dimension,description,created_at) VALUES (?,?,?,?)` | Create a collection |
-| `list_collections` | `SELECT c.name,...,COUNT(r.id) FROM collections c LEFT JOIN records r...` | List with counts |
-| `delete_collection` | `DELETE FROM collections WHERE name=?` | Delete a collection |
-| `collection_exists` | `SELECT 1 FROM collections WHERE name=? LIMIT 1` | Check existence |
+| Technique | Where Used | Query |
+|-----------|-----------|-------|
+| **LEFT JOIN** | `list_sessions_with_counts` | Sessions → Conversations → Messages for session picker |
+| **INNER JOIN** | `get_record`, `list_records`, `history_for_session` | Records → Collections (name resolution), Messages → Conversations |
+| **Subquery** | `trg_touch_session_on_message`, `list_sessions_with_counts` (record_count) | Resolves `session_id` via correlated/scalar subquery |
+| **Aggregate / GROUP BY** | `list_sessions_with_counts`, `list_collections_in_session`, `stats_per_collection` | COUNT per session, per collection |
+| **Triggers (3)** | Schema | Auto-create conversation + collection on session insert, auto-bump last_used_at |
+| **CHECK constraint** | `messages.kind` | Enforces `kind IN ('search','insert')` |
+| **Composite UNIQUE** | `collections` | `UNIQUE(session_id, name)` for session-scoped naming |
+| **UPSERT (ON CONFLICT)** | `upsert_session` | `INSERT ... ON CONFLICT(name) DO UPDATE` for idempotent session registration |
+| **CASCADE deletes** | All FK relationships | Deleting a session removes all its data across all 5 child tables |
 
 ---
 
-## PRAGMA Settings
+## Cascade Delete Chain (v3.0)
 
-```sql
-PRAGMA foreign_keys = ON;  -- CRITICAL: Without this, CASCADE doesn't work!
 ```
-
-SQLite *parses* `FOREIGN KEY` clauses by default but **ignores** them unless `PRAGMA foreign_keys = ON` is explicitly set. This is a common gotcha.
+DELETE session "demo_123"
+  ├→ DELETE conversations WHERE session_id = X        (cascade from sessions)
+  │    └→ DELETE messages WHERE conversation_id IN (...) (cascade from conversations)
+  ├→ DELETE collections WHERE session_id = X           (cascade from sessions)
+  │    └→ DELETE records WHERE collection_id IN (...)   (cascade from collections)
+  │         └→ DELETE metadata WHERE record_id IN (...) (cascade from records)
+  └→ (Also: records WHERE session_id = X — dual FK cascade)
+```
 
 ---
 
 ## What Is NOT in SQLite
 
-The following data is stored outside of SQLite:
-
 | Data | Storage | Why |
 |------|---------|-----|
-| Vector embeddings (384 floats per record) | `vectors.npy` (NumPy) | SQLite can't do fast matrix math; NumPy can |
-| Row index → Record ID mapping | `id_mapping.json` | Links NumPy rows to SQLite records |
-| Embedding model weights | `model_cache/huggingface/` | Large binary files (~80MB), cached once |
+| Vector embeddings (384 floats per record) | `vectors.npy` (NumPy, per-session folder) | Fast batch matrix math |
+| Row index → Record ID mapping | `id_mapping.json` (per-session folder) | Bridge between NumPy rows and SQLite records |
+| Embedding model weights | `model_cache/huggingface/` | Large binary (~80MB), cached once |

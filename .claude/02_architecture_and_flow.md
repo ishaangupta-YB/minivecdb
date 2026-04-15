@@ -38,9 +38,10 @@ MiniVecDB follows a **layered hybrid architecture** where three storage engines 
 | Component | File | Purpose |
 |-----------|------|---------|
 | CLI | `cli/main.py` | Terminal commands via argparse (insert, search, get, delete, etc.) |
-| Web | `web/app.py` | Browser-based search UI via Flask |
+| Web | `web/app.py` | Session-aware browser UI (session picker → search/insert/history/stats) |
+| Web API | `web/app.py` (`/api/search`) | JSON endpoint for programmatic access |
 
-Both layers are thin wrappers — they parse user input, call VectorStore methods, and format output. **No business logic lives here.**
+Both layers are thin wrappers — they parse user input, call VectorStore methods, and format output. **No business logic lives here.** The web layer adds session management (binding/switching VectorStore to different sessions).
 
 ### Layer 2: Core Engine (VectorStore)
 
@@ -56,9 +57,10 @@ The `VectorStore` class in `core/vector_store.py` is the **heart of MiniVecDB**.
 
 | Engine | File | Stores | Access Pattern |
 |--------|------|--------|---------------|
-| **SQLite** | `storage/database.py` | Records (id, text, collection), Metadata (key-value), Collections | SQL queries via `DatabaseManager` |
+| **SQLite** | `storage/database.py` | Sessions, Conversations, Messages, Collections, Records, Metadata | SQL queries via `DatabaseManager` (session-scoped) |
 | **NumPy** | In-memory `_vectors` matrix, persisted to `vectors.npy` | 384-dim float32 vectors | Direct array indexing + batch operations |
 | **JSON Bridge** | `id_mapping.json` | Ordered list mapping row index → record ID | Direct file I/O |
+| **Migrations** | `storage/migrations.py` | Legacy per-session DB → shared DB migration | One-shot on startup |
 
 ### Layer 4: Embedding Engine
 
@@ -195,8 +197,13 @@ When `VectorStore(storage_path=None)` is instantiated:
 2. Create storage directory
    └── os.makedirs(storage_path, exist_ok=True)
 
-3. Open SQLite connection
-   ├── sqlite3.connect("minivecdb.db")
+3. Open SQLite connection (v3.0: shared DB routing)
+   ├── If storage path is inside db_run/:
+   │   └── Use SHARED DB at db_run/minivecdb.db (ensure_shared_db_exists)
+   ├── Else (test/legacy path):
+   │   └── Use per-folder DB at <storage_path>/minivecdb.db
+   ├── DatabaseManager binds to session (upsert session row)
+   │   └── Triggers auto-create default conversation + collection
    ├── PRAGMA foreign_keys = ON
    └── Execute SCHEMA_SQL (CREATE TABLE IF NOT EXISTS ...)
 
@@ -225,12 +232,14 @@ When `VectorStore(storage_path=None)` is instantiated:
 
 | Data | Storage | When Persisted | Recovery |
 |------|---------|---------------|----------|
-| Records (id, text, collection) | SQLite `minivecdb.db` | On every insert/update/delete (auto-commit) | N/A (authoritative source) |
-| Metadata (key, value) | SQLite `minivecdb.db` | On every insert/update/delete (auto-commit) | N/A (authoritative source) |
-| Collections | SQLite `minivecdb.db` | On create/delete | N/A (authoritative source) |
-| Vectors (N × 384 matrix) | `vectors.npy` | After every insert/update/delete via `save()` | `_rebuild_vectors()` re-embeds from SQLite |
-| ID mapping (row → ID) | `id_mapping.json` | After every insert/update/delete via `save()` | `_rebuild_vectors()` rebuilds from SQLite |
-| Active run pointer | `.active_run` | On new run creation | Falls back to creating new run |
+| Records (id, text, collection) | SQLite shared `minivecdb.db` | On every insert/update/delete (auto-commit) | N/A (authoritative source) |
+| Metadata (key, value) | SQLite shared `minivecdb.db` | On every insert/update/delete (auto-commit) | N/A (authoritative source) |
+| Collections | SQLite shared `minivecdb.db` | On create/delete | N/A (authoritative source) |
+| Sessions, Conversations | SQLite shared `minivecdb.db` | On session creation/switch | N/A (authoritative source) |
+| Messages (chat history) | SQLite shared `minivecdb.db` | On every search/insert via `log_message()` | N/A (authoritative source) |
+| Vectors (N × 384 matrix) | Per-session `vectors.npy` | After every insert/update/delete via `save()` | `_rebuild_vectors()` re-embeds from SQLite |
+| ID mapping (row → ID) | Per-session `id_mapping.json` | After every insert/update/delete via `save()` | `_rebuild_vectors()` rebuilds from SQLite |
+| Active run pointer | `.active_run` | On new run creation or session switch | Falls back to creating new run |
 
 ### Crash Recovery
 

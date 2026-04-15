@@ -1,7 +1,7 @@
 # MiniVecDB — File: core/vector_store.py (The Heart of the Project)
 
 > **Location**: `minivecdb/core/vector_store.py`
-> **Lines**: 1769 | **Size**: 68.2 KB
+> **Lines**: 1705 | **Size**: 66.2 KB
 > **Purpose**: The main VectorStore class that integrates all three storage layers and implements the complete vector database API
 
 ---
@@ -14,6 +14,8 @@ This is the **central nervous system** of MiniVecDB. Every user-facing operation
 - **NumPy** (in-memory `_vectors` matrix) for vector math
 - **JSON** (`id_mapping.json`) for the bridge between them
 - **EmbeddingEngine** for text → vector conversion
+- **Shared DB routing** (v3.0): Uses shared `db_run/minivecdb.db` when inside `db_run/`, otherwise per-folder DB for legacy/test compatibility
+- **Session awareness** (v3.0): Every instance is bound to a `session_name` exposed as `self.session_name`
 
 Think of it as the "engine" of a car: the wheels (CLI), steering (Web UI), and fuel (embeddings) all connect through it.
 
@@ -50,6 +52,11 @@ The constructor does A LOT — it's the complete system bootstrap:
 | `new_run` | `False` | Force a fresh run directory |
 | `run_prefix` | `"demo"` | Prefix for run dir names |
 | `model_cache_path` | `None` | Override model cache location |
+| `session_name` | `None` | Explicit session name (v3.0); defaults to basename of storage_path |
+
+**Shared DB routing** (lines 204–209): If `storage_path` is inside `db_run/`, the constructor calls `ensure_shared_db_exists()` to get the shared DB path at `db_run/minivecdb.db`. Otherwise, it creates a per-folder `minivecdb.db` alongside the vectors. This keeps existing test fixtures working.
+
+**Session binding** (lines 211–224): The `session_name` parameter (or derived basename) is passed to `DatabaseManager`, which upserts the session row. The resulting `self.session_name` is used by the web UI and CLI.
 
 **Legacy migration** (lines 263–312): If old-style folders (`minivecdb_data/`, `vectorstore_data/`) exist but no active run, the constructor automatically migrates them into `db_run/`.
 
@@ -312,4 +319,19 @@ with VectorStore("./data") as store:
 Returns overall statistics:
 - `total_records`, `total_collections`, `dimension`
 - `memory_usage_bytes`: N × 384 × 4 (each float32 = 4 bytes)
-- `storage_path`, `embedding_model`, `db_file`
+- `storage_path`, `embedding_model`, `db_file`, `session_name`
+
+---
+
+## v3.0 Key Imports
+
+```python
+from ARCHITECTURE import VectorRecord, SearchResult, CollectionInfo, DatabaseStats, generate_id
+from storage.migrations import ensure_shared_db_exists
+```
+
+Notable additions:
+- **`CollectionInfo`** — Used by `list_collections()` return values
+- **`generate_id`** — Centralised ID generation (was previously inline)
+- **`ensure_shared_db_exists`** — Ensures shared DB exists + runs legacy migrations
+- **`is_within_db_run`** — Determines shared vs. per-folder DB routing

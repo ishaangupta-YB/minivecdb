@@ -1,0 +1,48 @@
+{% extends "_base.html" %}
+{% block title %}Stats &mdash; MiniVecDB{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2 style="margin-top:0;">Database statistics</h2>
+    <div style="overflow-x: auto;">
+      <table>
+        <tr><th>Total records</th><td>{{ stats.total_records }}</td></tr>
+        <tr><th>Total collections</th><td>{{ stats.total_collections }}</td></tr>
+        <tr><th>Vector dimension</th><td>{{ stats.dimension }}</td></tr>
+        <tr>
+          <th>Memory (vectors)</th>
+          <td>
+            {{ stats.memory_usage_bytes }} bytes
+            ({{ "%.3f"|format(memory_mb) }} MB)
+          </td>
+        </tr>
+        <tr><th>Embedding model</th><td><code>{{ stats.embedding_model }}</code></td></tr>
+        <tr><th>Storage path</th><td><code>{{ stats.storage_path }}</code></td></tr>
+        <tr><th>SQLite file</th><td><code>{{ stats.db_file }}</code></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Collections</h3>
+    {% if collections %}
+      <div style="overflow-x: auto;">
+        <table>
+          <tr>
+            <th>Name</th><th>Dimension</th><th>Records</th><th>Description</th>
+          </tr>
+          {% for c in collections %}
+            <tr>
+              <td><code>{{ c.name }}</code></td>
+              <td>{{ c.dimension }}</td>
+              <td>{{ c.count }}</td>
+              <td>{{ c.description or "—" }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    {% else %}
+      <p class="meta" style="margin:0;">No collections yet.</p>
+    {% endif %}
+  </div>
+{% endblock %}

@@ -1,0 +1,1 @@
+"""MiniVecDB web interface package."""

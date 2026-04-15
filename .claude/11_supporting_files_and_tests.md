@@ -29,6 +29,11 @@ Just a docstring. Marks the directory as a Python package.
 
 Empty package marker.
 
+### `web/__init__.py`
+**Lines**: 1 | **Size**: 39 bytes
+
+Empty package marker.
+
 ### `tests/__init__.py`
 **Lines**: 1 | **Size**: 34 bytes
 
@@ -56,7 +61,7 @@ pytest>=7.0.0              # Test framework (development)
 
 ### Test Organization
 
-The project has **13 test files** organized by feature area and development day:
+The project has **16 test files** organized by feature area and development day:
 
 | File | Tests | Focus Area |
 |------|-------|-----------|
@@ -68,9 +73,12 @@ The project has **13 test files** organized by feature area and development day:
 | `test_day7.py` | ~15 tests | Delete + Update + Collections (Day 7) |
 | `test_day8.py` | ~15 tests | Persistence save/load (Day 8) |
 | `test_day10.py` | ~15 tests | Advanced metadata filtering (Day 10) |
+| `test_sessions_schema.py` | 6 tests | v3.0: triggers, cascade deletes, aggregate queries, session binding |
 | `test_integration.py` | ~10 tests | Cross-module integration tests |
 | `test_edge_cases.py` | ~10 tests | Boundary conditions and error cases |
 | `day2_3_integration_test.py` | ~5 tests | Early integration (Days 2-3) |
+| `benchmark.py` | 4 benchmarks | Insertion throughput, query latency, memory, metric comparison |
+| `benchmark_results.json` | — | Saved JSON results from last benchmark run |
 | `run_all_tests.py` | — | Discovers and runs all tests |
 
 ### Running Tests
@@ -120,11 +128,13 @@ def test_insert_and_search():
 
 Key entries:
 ```
-db_run/           # All runtime artifacts (databases, vectors, model cache)
-__pycache__/      # Python bytecode
-*.pyc
-.venv/            # Virtual environment
-.pytest_cache/    # Pytest cache
+db_run/                 # All runtime artifacts (databases, vectors, model cache)
+__pycache__/            # Python bytecode
+*.py[cod]               # Compiled Python
+.venv/                  # Virtual environment
+.pytest_cache/          # Pytest cache
+.claude/                # Documentation (generated)
+benchmark_results.json  # Generated benchmark output
 ```
 
 **Why `db_run/` is gitignored**: This directory contains:
@@ -143,47 +153,53 @@ When MiniVecDB is used, the `db_run/` directory grows:
 ```
 db_run/
 ├── .active_run                          # Text file: "demo_1713052800_a1b2c3"
+├── minivecdb.db                         # SHARED SQLite DB (all sessions)
 ├── model_cache/
 │   └── huggingface/
 │       └── sentence-transformers_all-MiniLM-L6-v2/  # ~80MB cached model
 │
-├── demo_1713052800_a1b2c3/              # Run 1 (active)
-│   ├── minivecdb.db                     # SQLite database (~100KB per 1000 records)
-│   ├── vectors.npy                      # NumPy binary (1000 records × 384 × 4 = ~1.5MB)
-│   └── id_mapping.json                  # JSON list (~40KB per 1000 records)
+├── demo_1713052800_a1b2c3/              # Session 1 (active)
+│   ├── vectors.npy                      # NumPy binary (N × 384 × 4 bytes)
+│   └── id_mapping.json                  # JSON list (row index → record ID)
 │
-└── demo_1713139200_d4e5f6/              # Run 2 (old, inactive)
-    ├── minivecdb.db
+└── demo_1713139200_d4e5f6/              # Session 2 (inactive)
     ├── vectors.npy
     └── id_mapping.json
 ```
 
+**Note (v3.0)**: Only `vectors.npy` and `id_mapping.json` are per-session on disk. All tabular data lives in the shared `minivecdb.db` at the `db_run/` root, with sessions isolated at the query layer via `session_id` foreign keys.
+
 ---
 
-## Web Module (Placeholder)
+## Web Module ✅
 
 ### `web/` Directory
 
-Currently empty (no `app.py` or templates). The AGENTS.md specifies this will be built as a Flask web interface in Day 15, with:
-- `web/app.py` — Flask application with search API endpoints
-- `web/templates/index.html` — Search form + results page
+Now fully implemented with:
+- `web/__init__.py` — Package marker
+- `web/app.py` (510 lines, 16.9 KB) — Flask application with 10 routes: session picker, search, insert, stats, history, JSON API
+- `web/templates/` — 7 Jinja2 templates with a complete CSS design system
 
-The architecture supports this: `app.py` would create a `VectorStore` instance and expose `store.search()` through HTTP endpoints.
+> See [13_file_web_app.md](./13_file_web_app.md) for the complete breakdown.
 
 ---
 
-## Demo Module (Placeholder)
+## Demo Module ✅
 
 ### `demo/` Directory
 
-Currently empty. Planned for Day 14:
-- `demo/semantic_search.py` — Loads a real text dataset, runs example searches, displays results
-- Would demonstrate the full stack: insert documents → search → see ranked results
+Now populated with:
+- `demo/__init__.py` — Package marker
+- `demo/semantic_search.py` (353 lines, 14.9 KB) — Full end-to-end demo: loads 150+ docs, inserts, runs 10 queries, demonstrates filtered search, semantic similarity comparisons
+
+> See [12_file_data_benchmarks_demo.md](./12_file_data_benchmarks_demo.md) for a complete breakdown.
 
 ---
 
-## Data Module (Placeholder)
+## Data Module ✅
 
 ### `data/` Directory
 
-Currently empty. Will hold dataset files for the demo (news articles, Wikipedia excerpts, or FAQ entries).
+Now populated with a curated dataset of **150+ documents** across 5 categories (Technology, Science, Sports, Health, Business), split into 5 JSON shard files under `data/generated/`. Includes a loader module (`sample_dataset.py`) and used by both the demo and benchmarks.
+
+> See [12_file_data_benchmarks_demo.md](./12_file_data_benchmarks_demo.md) for a complete breakdown.

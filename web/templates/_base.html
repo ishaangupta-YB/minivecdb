@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}MiniVecDB{% endblock %}</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    :root {
+      --bg: #f9fafb;
+      --bg-card: #ffffff;
+      --text-main: #111827;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+      --primary: #0f172a;
+      --primary-hover: #334155;
+      --secondary: #f3f4f6;
+      --secondary-hover: #e5e7eb;
+      --accent: #2563eb;
+      --accent-light: #eff6ff;
+      --success-bg: #ecfdf5;
+      --success-text: #047857;
+      --success-border: #d1fae5;
+      --error-bg: #fef2f2;
+      --error-text: #b91c1c;
+      --error-border: #fee2e2;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+      --shadow-hover: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -4px rgba(0, 0, 0, 0.05);
+      --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text-main);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    header {
+      background: var(--primary);
+      color: #fff;
+      padding: 1.25rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    @media (min-width: 768px) {
+      header {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+      }
+    }
+
+    header a { 
+      color: #fff; 
+      text-decoration: none; 
+      transition: var(--transition);
+    }
+
+    .brand-container {
+      display: flex;
+      flex-direction: column;
+    }
+
+    header .title {
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    header .subtitle { 
+      font-size: 0.875rem; 
+      color: #94a3b8;
+      font-weight: 400;
+      margin-top: 0.2rem;
+      letter-spacing: 0.01em;
+    }
+
+    nav { 
+      display: flex; 
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    nav a { 
+      font-size: 0.875rem;
+      font-weight: 500;
+      padding: 0.5rem 1rem;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+
+    nav a:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    main {
+      max-width: 900px;
+      margin: 2.5rem auto;
+      padding: 0 1.25rem;
+      min-height: calc(100vh - 200px);
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem;
+      margin-bottom: 2rem;
+      box-shadow: var(--shadow-sm);
+      transition: var(--transition);
+    }
+
+    .card:hover {
+      box-shadow: var(--shadow);
+    }
+
+    h2 {
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-top: 0;
+      margin-bottom: 1.25rem;
+    }
+
+    h3 {
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin-top: 0;
+      margin-bottom: 1rem;
+    }
+
+    label { 
+      display: block; 
+      font-size: 0.875rem; 
+      font-weight: 500;
+      margin-bottom: 0.4rem; 
+      color: var(--text-main); 
+    }
+
+    input[type="text"], input[type="number"], select, textarea {
+      width: 100%;
+      padding: 0.65rem 0.85rem;
+      font-size: 0.95rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-card);
+      font-family: inherit;
+      color: var(--text-main);
+      transition: var(--transition);
+      box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.02) inset;
+    }
+
+    input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-light);
+    }
+
+    textarea { min-height: 120px; resize: vertical; line-height: 1.5; }
+
+    button, .btn {
+      background: var(--primary);
+      color: #fff;
+      border: 1px solid var(--primary);
+      padding: 0.65rem 1.25rem;
+      font-size: 0.95rem;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-weight: 500;
+      transition: var(--transition);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      text-decoration: none;
+    }
+
+    button:hover, .btn:hover { 
+      background: var(--primary-hover);
+      border-color: var(--primary-hover);
+    }
+
+    button.secondary, .btn.secondary { 
+      background: white; 
+      color: var(--text-main);
+      border: 1px solid var(--border);
+    }
+
+    button.secondary:hover, .btn.secondary:hover { 
+      background: var(--secondary); 
+    }
+
+    .row { 
+      display: flex; 
+      flex-wrap: wrap; 
+      gap: 1rem; 
+    }
+
+    .row > div { 
+      flex: 1 1 200px; 
+      min-width: 0; 
+    }
+
+    .meta { 
+      color: var(--text-muted); 
+      font-size: 0.875rem; 
+      line-height: 1.6;
+    }
+
+    .pill {
+      display: inline-block;
+      background: var(--secondary);
+      color: var(--text-main);
+      padding: 0.2rem 0.6rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      margin: 0 0.25rem 0.25rem 0;
+      border: 1px solid var(--border);
+    }
+
+    .error {
+      background: var(--error-bg);
+      color: var(--error-text);
+      border: 1px solid var(--error-border);
+      padding: 0.85rem 1.25rem;
+      border-radius: var(--radius-sm);
+      margin-bottom: 1.25rem;
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    .ok {
+      background: var(--success-bg);
+      color: var(--success-text);
+      border: 1px solid var(--success-border);
+      padding: 0.85rem 1.25rem;
+      border-radius: var(--radius-sm);
+      margin-bottom: 1.25rem;
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    footer {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      padding: 2rem 1rem;
+      margin-top: 2rem;
+      border-top: 1px solid var(--border);
+    }
+
+    footer a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 500;
+      transition: var(--transition);
+    }
+
+    footer a:hover {
+      color: var(--text-main);
+    }
+
+    table { 
+      width: 100%; 
+      border-collapse: collapse; 
+      font-size: 0.9rem;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 0.85rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th { 
+      font-weight: 500; 
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    tbody tr {
+      transition: var(--transition);
+    }
+
+    tbody tr:hover {
+      background: var(--secondary);
+    }
+
+    code {
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+      background: var(--secondary);
+      padding: 0.15rem 0.4rem;
+      border-radius: 6px;
+      font-size: 0.85em;
+      color: var(--text-main);
+      border: 1px solid var(--border);
+    }
+    
+    .session-info {
+      font-size: 0.85rem;
+      color: #94a3b8;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .session-info code {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #fff;
+    }
+
+    .session-info a {
+      color: #94a3b8;
+      font-weight: 500;
+    }
+
+    .session-info a:hover {
+      color: #fff;
+    }
+
+    .header-actions {
+      display: flex; 
+      flex-direction: column; 
+      align-items: flex-start; 
+      gap: 0.75rem;
+    }
+
+    @media (min-width: 768px) {
+      .header-actions {
+        align-items: flex-end;
+      }
+    }
+
+    @media (max-width: 560px) {
+      main { padding: 0 1rem; }
+      .row > div { flex: 1 1 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand-container">
+      <a href="{{ url_for('index') }}">
+        <div class="title">
+          <svg style="width:24px;height:24px;color:var(--accent-light);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+          </svg>
+          MiniVecDB
+        </div>
+        <div class="subtitle">A mini vector database, built from scratch.</div>
+      </a>
+    </div>
+
+    <div class="header-actions">
+      <nav>
+        {% if active_session %}
+          <a href="{{ url_for('search_page') }}">Search</a>
+          <a href="{{ url_for('insert') }}">Insert</a>
+          <a href="{{ url_for('history') }}">History</a>
+          <a href="{{ url_for('stats') }}">Stats</a>
+        {% else %}
+          <a href="{{ url_for('index') }}">Pick a session</a>
+        {% endif %}
+      </nav>
+      {% if active_session %}
+        <div class="session-info">
+          Session: <code>{{ active_session }}</code>
+          &middot; <a href="{{ url_for('index') }}">Switch</a>
+        </div>
+      {% endif %}
+    </div>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    MiniVecDB
+    {% if active_session %}
+      &middot; <a href="{{ url_for('stats') }}">Stats</a>
+      &middot; <a href="{{ url_for('api_search', q='hello', top_k=3) }}">API</a>
+    {% endif %}
+  </footer>
+</body>
+</html>

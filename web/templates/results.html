@@ -1,0 +1,95 @@
+{% extends "_base.html" %}
+{% block title %}Results &mdash; {{ query }}{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2 style="margin-top:0;">Search results</h2>
+    <p class="meta">
+      Query: <strong>{{ query or "(empty)" }}</strong>
+      &middot; metric: <code>{{ metric }}</code>
+      &middot; top_k: <code>{{ top_k }}</code>
+      {% if category %}
+        &middot; category: <code>{{ category }}</code>
+      {% endif %}
+      &middot; {{ "%.2f"|format(elapsed_ms) }} ms
+    </p>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <form action="{{ url_for('search') }}" method="post" style="margin-top: 0.5rem;">
+      <div class="row">
+        <div style="flex: 3 1 300px;">
+          <label for="query">Refine query</label>
+          <input type="text" id="query" name="query" value="{{ query }}" required>
+        </div>
+        <div>
+          <label for="metric">Metric</label>
+          <select id="metric" name="metric">
+            {% for m in ["cosine", "euclidean", "dot"] %}
+              <option value="{{ m }}" {% if m == metric %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="top_k">Top K</label>
+          <input type="number" id="top_k" name="top_k"
+                 value="{{ top_k }}" min="1" max="50">
+        </div>
+        <div>
+          <label for="category">Category</label>
+          <select id="category" name="category">
+            <option value="">(any)</option>
+            {% for cat in categories %}
+              <option value="{{ cat }}" {% if cat == category %}selected{% endif %}>{{ cat }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div style="margin-top: 1.5rem; display: flex; gap: 0.75rem;">
+        <button type="submit">
+          <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          Search again
+        </button>
+        <a href="{{ url_for('index') }}" class="btn secondary">
+          <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+          Home
+        </a>
+      </div>
+    </form>
+  </div>
+
+  {% if results %}
+    {% for r in results %}
+      <div class="card">
+        <div style="display:flex; justify-content: space-between; align-items:baseline; gap:1rem;">
+          <strong>#{{ r.rank }}</strong>
+          <span class="meta">
+            score: <strong>{{ r.score_display }}</strong>
+            <span style="opacity:0.6;">({{ "%.4f"|format(r.score) }})</span>
+          </span>
+        </div>
+        <p style="margin: 0.6rem 0 0.4rem;">{{ r.text }}</p>
+        {% if r.metadata %}
+          <div>
+            {% for k, v in r.metadata.items() %}
+              <span class="pill">{{ k }}: {{ v }}</span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        <div class="meta" style="margin-top: 0.35rem; font-size: 0.75rem;">
+          id: <code>{{ r.id }}</code>
+        </div>
+      </div>
+    {% endfor %}
+  {% elif not error %}
+    <div class="card">
+      <p class="meta" style="margin:0;">No matching results.</p>
+    </div>
+  {% endif %}
+{% endblock %}

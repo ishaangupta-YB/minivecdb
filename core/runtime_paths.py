@@ -18,6 +18,7 @@ from typing import Optional
 
 DB_RUN_DIRNAME = "db_run"
 ACTIVE_RUN_FILENAME = ".active_run"
+SHARED_DB_FILENAME = "minivecdb.db"
 MODEL_CACHE_DIRNAME = "model_cache"
 MODEL_CACHE_SUBDIR = os.path.join(MODEL_CACHE_DIRNAME, "huggingface")
 DEFAULT_RUN_PREFIX = "demo"
@@ -196,3 +197,36 @@ def get_model_cache_path(project_root: Optional[str] = None) -> str:
     cache_path = os.path.join(db_run_root, MODEL_CACHE_SUBDIR)
     os.makedirs(cache_path, exist_ok=True)
     return os.path.abspath(cache_path)
+
+
+def get_shared_db_path(project_root: Optional[str] = None) -> str:
+    """Return the absolute path to the shared SQLite database (db_run/minivecdb.db)."""
+    db_run_root = ensure_db_run_root(project_root=project_root)
+    return os.path.abspath(os.path.join(db_run_root, SHARED_DB_FILENAME))
+
+
+def list_run_directories(project_root: Optional[str] = None) -> list:
+    """Return absolute paths of all run directories under db_run, sorted by mtime desc.
+
+    Skips the model cache directory and any hidden files. Returns [] when db_run
+    does not exist or holds no run directories yet.
+    """
+    db_run_root = get_db_run_root(project_root=project_root)
+    if not os.path.isdir(db_run_root):
+        return []
+
+    entries = []
+    for name in os.listdir(db_run_root):
+        if name.startswith(".") or name == MODEL_CACHE_DIRNAME:
+            continue
+        full = os.path.join(db_run_root, name)
+        if not os.path.isdir(full):
+            continue
+        try:
+            mtime = os.path.getmtime(full)
+        except OSError:
+            mtime = 0.0
+        entries.append((mtime, os.path.abspath(full)))
+
+    entries.sort(key=lambda t: t[0], reverse=True)
+    return [path for _, path in entries]

@@ -1,0 +1,72 @@
+{% extends "_base.html" %}
+{% block title %}Pick a session &mdash; MiniVecDB{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2 style="margin-top:0;">Pick a session</h2>
+    <p class="meta">
+      Every session has its own vectors on disk but shares one SQLite
+      database. Start a fresh one, or jump back into an existing run.
+    </p>
+
+    {% if active_name %}
+      <div class="ok" style="margin-bottom:1rem;">
+        Currently active: <code>{{ active_name }}</code>
+      </div>
+    {% endif %}
+
+    <form action="{{ url_for('session_new') }}" method="post"
+          style="margin-bottom:1.25rem;">
+      <button type="submit">Start new session</button>
+    </form>
+
+    {% if sessions %}
+      <form action="{{ url_for('session_switch') }}" method="post">
+        <label for="session_name">Resume existing session</label>
+        <div class="row">
+          <div style="flex: 3 1 260px;">
+            <select id="session_name" name="session_name" required>
+              {% for s in sessions %}
+                <option value="{{ s.name }}"
+                  {% if s.name == active_name %}selected{% endif %}>
+                  {{ s.name }}
+                  &middot; {{ s.record_count }} records
+                  &middot; {{ s.msg_count }} msgs
+                  &middot; last used {{ s.last_used_display }}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <button type="submit" class="secondary">Resume</button>
+          </div>
+        </div>
+      </form>
+
+      <div class="card" style="margin-top:1.25rem; background:#f9fafb;">
+        <h3 style="margin-top:0;">Sessions in this database</h3>
+        <div style="overflow-x: auto;">
+          <table>
+            <tr>
+              <th>Name</th><th>Records</th><th>Messages</th>
+              <th>Created</th><th>Last used</th>
+            </tr>
+            {% for s in sessions %}
+              <tr>
+                <td><code>{{ s.name }}</code></td>
+                <td>{{ s.record_count }}</td>
+                <td>{{ s.msg_count }}</td>
+                <td>{{ s.created_at_display }}</td>
+                <td>{{ s.last_used_display }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        </div>
+      </div>
+    {% else %}
+      <p class="meta" style="margin:0;">
+        No saved sessions yet. Click "Start new session" to create one.
+      </p>
+    {% endif %}
+  </div>
+{% endblock %}

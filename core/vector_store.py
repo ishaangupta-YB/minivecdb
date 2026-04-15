@@ -55,12 +55,14 @@ from core.embeddings import create_embedding_engine
 from core.runtime_paths import (
     get_model_cache_path,
     get_project_root,
+    is_within_db_run,
     read_active_run_path,
     resolve_storage_path,
     create_new_run_path,
 )
 from core.distance_metrics import get_metric
 from storage.database import DatabaseManager
+from storage.migrations import ensure_shared_db_exists
 
 
 logger = logging.getLogger(__name__)
@@ -104,6 +106,7 @@ class VectorStore:
         new_run: bool = False,
         run_prefix: str = DEFAULT_RUN_PREFIX,
         model_cache_path: Optional[str] = None,
+        session_name: Optional[str] = None,
     ) -> None:
         """
         Initialise the VectorStore.
@@ -192,9 +195,33 @@ class VectorStore:
         os.makedirs(self.storage_path, exist_ok=True)
 
         # --- Step 2: Initialise SQLite via DatabaseManager ---
-        # The database file lives inside our storage directory.
-        db_path = os.path.join(self.storage_path, "minivecdb.db")
-        self.db: DatabaseManager = DatabaseManager(db_path)
+        # If the storage directory lives inside the managed db_run root
+        # we use the SHARED database at db_run/minivecdb.db so every
+        # session reuses the same relational tables (sessions,
+        # conversations, messages, collections, records, metadata).
+        # Legacy/test paths outside db_run get their own per-folder DB,
+        # so existing fixtures keep working unchanged.
+        if is_within_db_run(self.storage_path):
+            db_path = ensure_shared_db_exists(
+                os.path.dirname(os.path.abspath(self.storage_path))
+            )
+        else:
+            db_path = os.path.join(self.storage_path, "minivecdb.db")
+
+        resolved_session_name = (
+            session_name
+            if session_name is not None
+            else os.path.basename(self.storage_path)
+        )
+        if not resolved_session_name:
+            resolved_session_name = "default"
+
+        self.db: DatabaseManager = DatabaseManager(
+            db_path,
+            session_name=resolved_session_name,
+            session_storage_path=self.storage_path,
+        )
+        self.session_name: str = self.db.session_name
 
         # --- Step 3: Ensure default collection exists ---
         # The SCHEMA_SQL already creates a "default" collection, but
@@ -1623,6 +1650,7 @@ class VectorStore:
                 self.embedding_engine, "model_name", "unknown"
             ),
             db_file=self.db.db_path,
+            session_name=self.session_name,
         )
 
     # ===============================================================

@@ -39,6 +39,7 @@ HOW EMBEDDING MODELS WORK (simplified):
 
 import numpy as np
 import hashlib
+import time
 from typing import List, Optional, Union
 import warnings
 import os
@@ -141,6 +142,34 @@ class EmbeddingEngine:
                 self._is_available = False
         return self._is_available
     
+    def _detect_cached_model(self, cache_folder: str) -> bool:
+        """Check whether the model files already exist in the cache folder.
+
+        Hugging Face stores downloaded models in directories that follow one
+        of two naming conventions depending on the library version:
+          - ``sentence-transformers_<model_name>``   (older)
+          - ``models--sentence-transformers--<model_name>``  (newer hub layout)
+
+        Returns True if a matching directory is found, False otherwise.
+        """
+        if not os.path.isdir(cache_folder):
+            return False
+
+        # Patterns that Hugging Face / sentence-transformers may use
+        candidates = [
+            f"sentence-transformers_{self.model_name}",
+            f"models--sentence-transformers--{self.model_name}",
+            self.model_name,
+        ]
+
+        for entry in os.listdir(cache_folder):
+            for pattern in candidates:
+                if pattern in entry:
+                    full_path = os.path.join(cache_folder, entry)
+                    if os.path.isdir(full_path):
+                        return True
+        return False
+
     def _load_model(self):
         """
         Load the embedding model into memory.
@@ -173,10 +202,21 @@ class EmbeddingEngine:
         logging.getLogger("huggingface_hub.utils._headers").setLevel(logging.ERROR)
 
         from sentence_transformers import SentenceTransformer
-        
-        print(f"Loading embedding model '{self.model_name}'...")
-        print("(First run downloads ~80 MB. Subsequent runs use cache.)")
-        print(f"(Cache folder: {cache_folder})")
+
+        # Detect whether we will load from cache or download fresh
+        is_cached = self._detect_cached_model(cache_folder)
+
+        if is_cached:
+            print(f"[embeddings] Model '{self.model_name}' found in local cache.")
+            print(f"[embeddings] Loading from cache: {cache_folder}")
+            print(f"[embeddings] (No download required -- using previously cached files)")
+        else:
+            print(f"[embeddings] Model '{self.model_name}' NOT found in cache.")
+            print(f"[embeddings] Downloading model from HuggingFace (~80 MB)...")
+            print(f"[embeddings] Download destination: {cache_folder}")
+            print(f"[embeddings] (This is a one-time download; future runs will use the cache)")
+
+        load_start = time.time()
         
         # Load the model. On first run, this downloads from HuggingFace.
         # On subsequent runs, it loads from the configured cache folder.
@@ -190,6 +230,8 @@ class EmbeddingEngine:
             os.environ.setdefault("HF_HOME", cache_folder)
             self._model = SentenceTransformer(self.model_name)
         
+        load_elapsed = time.time() - load_start
+
         # Update dimension based on actual model output
         # (in case a different model was specified).
         # Newer sentence-transformers renamed this API.
@@ -198,7 +240,10 @@ class EmbeddingEngine:
         else:
             self.dimension = self._model.get_sentence_embedding_dimension()
         
-        print(f"Model loaded! Output dimension: {self.dimension}")
+        source_label = "cache" if is_cached else "download"
+        print(f"[embeddings] Model loaded successfully ({source_label}) in {load_elapsed:.2f}s")
+        print(f"[embeddings] Output dimension: {self.dimension}")
+        print(f"[embeddings] Cache folder: {cache_folder}")
     
     def encode(self, text: str) -> Vector:
         """

@@ -1,266 +1,187 @@
-# MiniVecDB — File: storage/database.py (SQLite Wrapper)
+# MiniVecDB — File: `storage/database.py` (v3.0)
 
 > **Location**: `minivecdb/storage/database.py`
-> **Lines**: 786 | **Size**: 29.6 KB
-> **Purpose**: The ONLY SQLite access layer — wraps all raw SQL behind clean Python methods (Repository Pattern)
+> **Lines**: 565 | **Size**: 21.5 KB
+> **Role**: Session-bound SQLite access layer — all record/metadata/collection/message CRUD
 
 ---
 
-## Why This File Exists
+## What Changed from Earlier Versions
 
-This module implements the **Repository Pattern** — it hides all raw SQL behind clean Python methods. The rest of the codebase (VectorStore, CLI, Web) never writes SQL directly; they call methods like `db.insert_record()` or `db.filter_by_metadata()`.
+The DatabaseManager has been **substantially rewritten** from 786→565 lines (more focused, less duplication):
 
-**Benefits**:
-- SQL is centralised in one file (easier to audit, maintain, optimize)
-- The rest of the code doesn't need to know about SQLite internals
-- Changing the SQL implementation only requires changes here
-- Parameterised queries prevent SQL injection everywhere automatically
-
----
-
-## Class: `DatabaseManager`
-
-### Constructor: `__init__(db_path: str)`
-**Lines 65–105**
-
-**Step-by-step**:
-1. `sqlite3.connect(db_path, check_same_thread=False)`
-   - Opens (or creates) the SQLite database file
-   - `check_same_thread=False` allows Flask's multi-threaded request handling
-2. `PRAGMA foreign_keys = ON`
-   - **CRITICAL**: Without this, SQLite parses but IGNORES foreign key constraints
-   - CASCADE deletes won't fire if this isn't set
-3. `conn.executescript(SCHEMA_SQL)`
-   - Runs all CREATE TABLE and CREATE INDEX statements
-   - `IF NOT EXISTS` guards make it safe to run every time
-4. `conn.commit()`
-   - Finalises the schema creation
+1. **Session-bound design**: Every instance is locked to `self.session_id` at construction
+2. **Shared DB support**: Multiple sessions share one `.db` file; FK isolation at the row level
+3. **New v3.0 methods**: `list_sessions_with_counts()`, `log_message()`, `get_history()`
+4. **Backward compatibility**: Constructor auto-derives `session_name` from `db_path` for legacy callers
+5. **All SQL comes from `ARCHITECTURE.py`**: Zero inline SQL construction (except `_execute_single_filter` for dynamic operators)
 
 ---
 
-### Transaction Context Manager
-
-#### `transaction() → Iterator[None]`
-**Lines 113–133**
+## Constructor
 
 ```python
-@contextmanager
-def transaction(self):
-    try:
-        self._conn.execute("BEGIN")
-        yield
-    except Exception:
-        self._conn.rollback()
-        raise
-    else:
-        self._conn.commit()
+DatabaseManager(db_path: str, session_name: Optional[str] = None, session_storage_path: Optional[str] = None)
 ```
 
-**What it does**: Groups multiple operations into one atomic transaction. If any operation raises an exception, ALL changes are rolled back.
+Construction sequence:
+1. Creates parent directory for `db_path` if missing
+2. Opens SQLite connection with `check_same_thread=False`
+3. Enables `PRAGMA foreign_keys = ON`
+4. Executes `SCHEMA_SQL` (idempotent: `IF NOT EXISTS`)
+5. Derives `session_name` from parent dir if not provided (backward compat)
+6. Upserts session row → triggers auto-create default conversation + collection
+7. Caches `self.session_id` and `self.conversation_id`
 
-**Used by**: `VectorStore.insert()` and `insert_batch()` for atomic record + metadata insertion:
+**Key attributes**:
+- `self.db_path: str` — Path to the SQLite file
+- `self.session_name: str` — Name of the bound session
+- `self.session_id: int` — Cached session row ID
+- `self.conversation_id: int` — Cached default conversation ID
+
+---
+
+## Internal Helpers
+
+### `_require_non_empty_string(value, field_name)` — static
+Raises `ValueError` if the value is not a non-empty string. Used as input validation throughout.
+
+### `_ensure_session(name, storage_path) → int`
+Upserts a session row using `SQL_QUERIES["upsert_session"]` and returns the session ID. The UPSERT ensures idempotency: calling with the same name just updates `storage_path`.
+
+### `_get_or_create_default_conversation(session_id) → int`
+Returns the first conversation's ID for the session. Usually the trigger already created it; if not (edge case), inserts one manually.
+
+### `_resolve_collection_id(name) → int`
+Looks up the collection's surrogate INTEGER PK from the composite `(session_id, name)` key. Raises `ValueError` if the collection doesn't exist.
+
+### `transaction() → Iterator[None]`
+Context manager for atomic multi-write operations:
 ```python
-with self.db.transaction():
-    self.db.insert_record(id, text, collection, created_at, auto_commit=False)
-    for key, value in metadata.items():
-        self.db.insert_metadata(id, key, value, auto_commit=False)
+with dm.transaction():
+    dm.insert_record(...)
+    dm.insert_metadata(...)
+    # Committed atomically. Rolled back on exception.
 ```
 
 ---
 
-## Record CRUD Functions
+## Record CRUD (Session-Scoped)
+
+Every record operation is automatically scoped to `self.session_id`.
 
 ### `insert_record(id, text, collection, created_at, auto_commit=True)`
-**Lines 148–195**
-
-Executes: `INSERT INTO records (id,text,collection,created_at) VALUES (?,?,?,?)`
-
-**Why `auto_commit` parameter?**: When called inside a `transaction()`, we don't want each individual insert to commit — the transaction::commit() handles that. When called standalone, we commit immediately.
-
-**Error handling**: Catches `sqlite3.IntegrityError` for:
-- Duplicate primary key (record already exists)
-- Foreign key violation (collection doesn't exist)
+- Resolves `collection` name → `collection_id` via `_resolve_collection_id`
+- Inserts into `records` with `(id, session_id, collection_id, text, created_at)`
+- `auto_commit=True` by default; set `False` inside `transaction()` blocks
 
 ### `get_record(id) → Optional[Tuple]`
-**Lines 197–217**
-
-Returns `(id, text, collection, created_at)` tuple or `None`.
-
-**Why tuple not dict?** SQLite's `fetchone()` returns tuples by default. Converting to a named structure would add overhead. The caller (VectorStore) knows the column order from the SELECT clause.
+Returns `(id, text, collection_name, created_at)` via a JOIN on records ↔ collections. Returns `None` if not found in the bound session.
 
 ### `delete_record(id) → bool`
-**Lines 219–243**
-
-Uses `cursor.rowcount > 0` to determine if a record was actually deleted. CASCADE automatically deletes metadata rows.
+Deletes the record (scoped to session). Cascades to metadata. Returns `True` if a row was deleted.
 
 ### `update_record_text(id, new_text) → bool`
-**Lines 245–271**
-
-**Note**: This only updates the text in SQLite. The caller (VectorStore.update()) is responsible for re-embedding the vector.
-
-**Subtle detail**: The SQL is `UPDATE records SET text=? WHERE id=?`, so `new_text` comes FIRST in the parameter tuple, then `id`.
+Updates only the text column. The caller (VectorStore) is responsible for re-embedding and updating the vector.
 
 ### `record_exists(id) → bool`
-**Lines 273–290**
-
-Uses `SELECT 1 ... LIMIT 1` — faster than `get_record()` because it doesn't fetch actual columns, just checks existence.
+Fast `SELECT 1 ... LIMIT 1` existence check scoped to the session.
 
 ---
 
-## Metadata Operations (EAV Pattern)
-
-### What Is EAV?
-The metadata table uses **Entity-Attribute-Value** pattern:
-
-| Column | EAV Role | Example |
-|--------|----------|---------|
-| `record_id` | Entity | `"vec_a1b2c3d4"` |
-| `key` | Attribute | `"category"` |
-| `value` | Value | `"science"` |
-
-This allows each record to have completely different tags without schema changes.
+## Metadata (EAV Pattern)
 
 ### `insert_metadata(record_id, key, value, auto_commit=True)`
-**Lines 311–347**
-
-Adds one key-value tag row. Values are always stored as `str(value)`.
+Attaches a key/value tag to a record.
 
 ### `get_metadata(record_id) → Dict[str, str]`
-**Lines 349–371**
-
-Fetches all metadata for a record and converts from list of tuples to dict:
-```python
-# SQLite returns: [("category", "science"), ("author", "Einstein")]
-# dict() converts: {"category": "science", "author": "Einstein"}
-```
+Returns `{key: value}` dict for a record.
 
 ### `delete_metadata(record_id)`
-**Lines 373–387**
+Drops all metadata rows for a record.
 
-Deletes ALL metadata for a record. Used by VectorStore.update() for "full replace" semantics.
+### `filter_by_metadata(filters) → List[str]`
+Returns record IDs matching ALL filter conditions (AND logic). Supports three value types:
 
-### `filter_by_metadata(filters: Dict) → List[str]`
-**Lines 402–452** | The metadata pre-filtering engine.
+| Value Type | Behavior | Example |
+|-----------|----------|---------|
+| `str` | Exact match | `{"category": "Science"}` |
+| `list` | IN-set match | `{"category": ["Science", "Health"]}` |
+| `dict` | Operator comparison | `{"year": {"$gt": 2020}}` |
 
-**Supports three filter types**:
+**Supported operators** (`_FILTER_OPERATORS`):
+- `$gt` / `$lt` / `$gte` / `$lte` — Numeric comparison (casts TEXT to REAL)
+- `$ne` — Not equal (string comparison)
 
-#### Type 1: Exact Match (string value)
-```python
-{"category": "science"}
-→ SELECT DISTINCT record_id FROM metadata WHERE key='category' AND value='science'
-```
-
-#### Type 2: List Match / OR (list of strings)
-```python
-{"category": ["science", "tech"]}
-→ SELECT DISTINCT record_id FROM metadata WHERE key='category' AND value IN ('science','tech')
-```
-
-#### Type 3: Comparison Operators (dict)
-```python
-{"year": {"$gt": "2020", "$lte": "2025"}}
-→ WHERE key='year' AND CAST(value AS REAL) > 2020 AND CAST(value AS REAL) <= 2025
-```
-
-**Supported operators** (`_FILTER_OPERATORS` dict, lines 394–400):
-| Operator | SQL Expression | Example |
-|----------|---------------|---------|
-| `$gt` | `CAST(value AS REAL) > ?` | Year > 2020 |
-| `$lt` | `CAST(value AS REAL) < ?` | Price < 50 |
-| `$gte` | `CAST(value AS REAL) >= ?` | Score >= 0.8 |
-| `$lte` | `CAST(value AS REAL) <= ?` | Count <= 100 |
-| `$ne` | `value != ?` | Status != "draft" |
-
-**AND logic**: Multiple filters are intersected: `result = set1 & set2 & set3`. A record must match ALL criteria.
-
-**Why `CAST(value AS REAL)` for numeric operators?** All values are stored as TEXT. Without the cast, `"2021" > "2020"` would be a string comparison (which happens to work for numbers) but `"9" > "10"` would be wrong (string "9" > string "10"). Casting ensures numeric comparison.
-
-### `_execute_single_filter(key, value) → set`
-**Lines 454–536** | Internal method that handles one filter criterion. Uses `isinstance()` checks to determine which SQL to generate.
+All queries scope via `JOIN records r ON r.id = m.record_id WHERE r.session_id = ?`.
 
 ---
 
 ## Record Listing & ID Retrieval
 
-### `get_record_ids_in_collection(collection) → List[str]`
-**Lines 542–558** | Returns all IDs in a collection, ordered by creation time.
-
-### `get_all_record_ids() → List[str]`
-**Lines 560–569** | Returns every record ID across all collections.
-
-### `get_all_records_with_text() → List[Tuple[str, str]]`
-**Lines 571–582** | Returns `(id, text)` pairs for ALL records. Used by `_rebuild_vectors()` for emergency re-embedding.
-
-### `list_record_ids(collection=None, limit=100) → List[str]`
-**Lines 584–605** | Paginated ID listing with optional collection filter.
-
-### `delete_records_in_collection(collection) → int`
-**Lines 607–624** | Bulk delete all records in a collection. Returns count deleted.
-
-### `delete_all_records() → int`
-**Lines 626–637** | Nuclear option: delete ALL records across all collections.
+| Method | Returns | Query Used |
+|--------|---------|-----------|
+| `get_record_ids_in_collection(collection)` | `List[str]` | `collection_record_ids` |
+| `get_all_record_ids()` | `List[str]` | `all_record_ids` |
+| `get_all_records_with_text()` | `List[Tuple[str, str]]` | `all_records_with_text` |
+| `list_record_ids(collection=None, limit=100)` | `List[str]` | `list_record_ids` or `list_record_ids_in_collection` |
+| `delete_records_in_collection(collection) → int` | Deleted count | `delete_records_in_collection` (scalar subquery) |
+| `delete_all_records() → int` | Deleted count | `delete_all_records` |
 
 ---
 
-## Collection CRUD
+## Collection CRUD (Session-Scoped)
 
 ### `create_collection(name, dimension=384, description="")`
-**Lines 648–677**
-
-Inserts into the `collections` table. Raises `ValueError` if the name already exists (PRIMARY KEY violation).
+Inserts into `collections` with `(session_id, name, dimension, description, time.time())`. The composite UNIQUE constraint prevents duplicate names within a session.
 
 ### `list_collections() → List[Tuple]`
-**Lines 679–693**
-
-Uses a `LEFT JOIN` between collections and records to compute per-collection record counts even for empty collections:
-```sql
-SELECT c.name, c.dimension, c.description, c.created_at, COUNT(r.id) as cnt
-FROM collections c LEFT JOIN records r ON c.name = r.collection
-GROUP BY c.name ORDER BY c.created_at
-```
+Returns `(name, dimension, description, created_at, record_count)` tuples. Uses a LEFT JOIN + GROUP BY query internally. The return shape preserves backward compatibility with pre-v3 callers.
 
 ### `delete_collection(name) → bool`
-**Lines 695–714**
-
-CASCADE delete: removing a collection automatically removes all its records (which in turn removes their metadata).
+Drops a collection and cascades to its records + metadata.
 
 ### `collection_exists(name) → bool`
-**Lines 716–730**
-
-Uses `SELECT 1 ... LIMIT 1` for fast existence check.
+Fast existence check using `SELECT 1 LIMIT 1`.
 
 ---
 
 ## Statistics
 
 ### `count_records(collection=None) → int`
-**Lines 736–757**
-
-Uses `SELECT COUNT(*)` — two variants:
-- All records: `count_all_records` query (no WHERE)
-- Per-collection: `count_records` query (WHERE collection=?)
+Total records in the session, or in one collection if specified.
 
 ### `stats_per_collection() → Dict[str, int]`
-**Lines 759–772**
+Returns `{collection_name: record_count}` for the bound session. Uses LEFT JOIN + GROUP BY.
 
-Group-by query that returns `{"default": 42, "science": 15}`.
+---
+
+## Sessions / Conversations / Messages (v3.0)
+
+### `list_sessions_with_counts() → List[SessionInfo]`
+Executes the `list_sessions_with_counts` query (LEFT JOIN sessions → conversations → messages, plus a correlated subquery for record count). Returns `SessionInfo` dataclass instances sorted by `last_used_at DESC`.
+
+### `log_message(kind, query_text, *, metric, top_k, category_filter, result_count, elapsed_ms, response_ref, conversation_id) → int`
+Persists one chat-history row. Validates `kind ∈ {'search', 'insert'}`. Defaults to `self.conversation_id` if `conversation_id` is not provided. The trigger automatically bumps `sessions.last_used_at`.
+
+### `get_history(limit=200) → List[MessageRow]`
+Returns chronological message list for the bound session. Uses the `history_for_session` JOIN query (messages → conversations → filter by session_id).
 
 ---
 
 ## Connection Management
 
 ### `close()`
-**Lines 778–785**
-
-Closes the SQLite connection and releases the file lock. Must be called when done — `VectorStore.close()` calls this.
+Closes the underlying SQLite connection. Should always be called when done.
 
 ---
 
-## Design Patterns Used
+## Design Decisions
 
-| Pattern | Where | Why |
-|---------|-------|-----|
-| **Repository** | Entire class | Encapsulates all SQL behind clean methods |
-| **Context Manager** | `transaction()` | Atomic multi-step writes with rollback |
-| **Strategy** | `_execute_single_filter()` | Different SQL for str/list/dict values |
-| **Parameterised Queries** | Every SQL call | Prevents SQL injection |
+1. **Session binding at construction**: Rather than passing `session_id` to every method, it's cached once. This matches the architecture: a VectorStore instance is always tied to one session.
+
+2. **SQL from ARCHITECTURE.py**: All 35 queries come from the central `SQL_QUERIES` dict. The only dynamic SQL is in `_execute_single_filter` for operator-based metadata filters.
+
+3. **auto_commit flag**: Record and metadata inserts can defer commits for batch operations. The `transaction()` context manager provides explicit SAVEPOINT-like semantics.
+
+4. **Backward compatibility**: When no `session_name` is provided, the manager derives it from the parent directory of `db_path`, so test fixtures like `DatabaseManager("/tmp/foo/minivecdb.db")` continue working without changes.

@@ -33,6 +33,6 @@ id_mapping.json*
 # macOS
 .DS_Store
 checklist.md
-.claude/
+# .claude/
 .cursor/
 benchmark_results.json

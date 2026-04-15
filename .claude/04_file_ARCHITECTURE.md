@@ -1,140 +1,220 @@
-# MiniVecDB — File: ARCHITECTURE.py (Central Specification)
+# MiniVecDB — File: `ARCHITECTURE.py` (v3.0)
 
-> **Location**: `minivecdb/ARCHITECTURE.py` (project root)
-> **Lines**: 152 | **Size**: 8.9 KB
-> **Purpose**: The single source of truth for data models, SQL schema, and query templates
-
----
-
-## Why This File Exists
-
-`ARCHITECTURE.py` is the **central design specification** for the entire project. Instead of scattering data models and SQL strings across multiple files, everything is defined here and imported by other modules. This follows a key principle: **define once, use everywhere**.
-
-Every module that touches the database imports from here:
-- `core/vector_store.py` imports `VectorRecord`, `SearchResult`, `CollectionInfo`, `DatabaseStats`, `generate_id`
-- `storage/database.py` imports `SCHEMA_SQL`, `SQL_QUERIES`
+> **Location**: `minivecdb/ARCHITECTURE.py`
+> **Lines**: 526 | **Size**: 21 KB
+> **Role**: Central specification — schema, queries, data models, ID generation
 
 ---
 
-## Section Breakdown
+## What Changed from Earlier Versions
 
-### 1. SQL Schema (`SCHEMA_SQL`)
-**Lines 20–48** — A multi-statement SQL string that creates all 3 tables + indexes.
+ARCHITECTURE.py has **grown from 152 lines to 526 lines** since the initial documentation. Major additions:
 
-```python
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS collections (...);
-INSERT OR IGNORE INTO collections (...);  -- Auto-create 'default' collection
-CREATE TABLE IF NOT EXISTS records (...);
-CREATE INDEX IF NOT EXISTS idx_records_collection ON records(collection);
-CREATE TABLE IF NOT EXISTS metadata (...);
-CREATE INDEX IF NOT EXISTS idx_metadata_kv ON metadata(key, value);
-CREATE INDEX IF NOT EXISTS idx_metadata_record ON metadata(record_id);
-"""
+1. **6-table schema** with 3 triggers and 9 indexes (was in flux, now complete)
+2. **35 parameterised SQL queries** in `SQL_QUERIES` dict (was partially defined)
+3. **7 data models** as `@dataclass` objects (was 3)
+4. **`generate_id()` function** for collision-resistant record IDs
+5. **Self-test block** that exercises triggers, JOINs, aggregates, and cascades
+
+---
+
+## File Structure
+
+The file is organized into 5 major sections:
+
+```
+Lines   1-18   : Module docstring (hybrid architecture overview)
+Lines  19-21   : Imports (dataclasses, typing, numpy, time, uuid)
+Lines  23-159  : SCHEMA_SQL constant (6 tables + 3 triggers)
+Lines 161-325  : SQL_QUERIES dict (35 parameterised templates)
+Lines 327-433  : Data models (7 dataclasses + generate_id)
+Lines 436-452  : Disk layout documentation comment
+Lines 455-526  : Self-test (__main__ block)
 ```
 
-**Why here?** The schema is a contract. Defining it centrally means:
-- Any developer can see the exact table structure by reading one file
-- Changes to the schema only need to happen in one place
-- `IF NOT EXISTS` guards make it safe to run on every startup
+---
 
-### 2. SQL Queries (`SQL_QUERIES`)
-**Lines 50–76** — A dictionary mapping human-readable names to parameterised SQL strings.
+## SCHEMA_SQL Constant
 
-```python
-SQL_QUERIES = {
-    "insert_record": "INSERT INTO records (id,text,collection,created_at) VALUES (?,?,?,?)",
-    "get_record": "SELECT id,text,collection,created_at FROM records WHERE id=?",
-    ...
-}
-```
+A single multi-line SQL string containing all `CREATE TABLE`, `CREATE INDEX`, and `CREATE TRIGGER` statements. Executed via `conn.executescript(SCHEMA_SQL)` — safe to run multiple times (`IF NOT EXISTS` on every statement).
 
-**Why a dictionary?** Instead of writing SQL inline in `database.py`, all queries live here:
-- Easy to audit: "what SQL does this project run?" — look at one dict
-- Prevents typos: `SQL_QUERIES["insert_record"]` vs writing the SQL from memory every time
-- Parameterised `?` placeholders prevent SQL injection (never f-strings with SQL)
+See [03_er_diagram_and_schema.md](./03_er_diagram_and_schema.md) for the full table/trigger breakdown.
 
-### 3. Data Models (Dataclasses)
-**Lines 81–105** — Four `@dataclass` definitions that represent the project's core data structures.
+---
 
-#### `VectorRecord` (Line 82)
+## SQL_QUERIES Dict (35 Templates)
+
+Every SQL query the application uses lives here. Never string-format SQL anywhere else. All use `?` parameterised placeholders.
+
+### Session Queries (4)
+| Key | SQL Technique | Purpose |
+|-----|--------------|---------|
+| `insert_session` | INSERT | Register a new session row |
+| `upsert_session` | INSERT...ON CONFLICT DO UPDATE | Idempotent session registration |
+| `get_session_by_name` | SELECT WHERE | Look up session by unique name |
+| `touch_session` | UPDATE SET | Manually bump `last_used_at` |
+
+### Session Aggregate (1)
+| Key | SQL Technique | Purpose |
+|-----|--------------|---------|
+| `list_sessions_with_counts` | LEFT JOIN + GROUP BY + correlated subquery | Session picker: msg_count, record_count per session |
+
+### Conversation Queries (2)
+| Key | SQL Technique | Purpose |
+|-----|--------------|---------|
+| `get_default_conversation_for_session` | SELECT ORDER BY LIMIT 1 | First (default) conversation |
+| `insert_conversation` | INSERT | Create a new conversation |
+
+### Message Queries (2)
+| Key | SQL Technique | Purpose |
+|-----|--------------|---------|
+| `insert_message` | INSERT (10 params) | Log a user query |
+| `history_for_session` | INNER JOIN + ORDER BY + LIMIT | Chat history timeline |
+
+### Collection Queries (6)
+| Key | SQL Technique | Purpose |
+|-----|--------------|---------|
+| `create_collection` | INSERT | New collection in session |
+| `get_collection_id_by_name` | SELECT WHERE (session_id, name) | Name → surrogate ID |
+| `get_collection_full` | SELECT WHERE | Full collection row |
+| `list_collections_in_session` | LEFT JOIN + GROUP BY | All collections with record counts |
+| `delete_collection` | DELETE WHERE | Drop collection + cascade |
+| `collection_exists` | SELECT 1 LIMIT 1 | Fast existence check |
+
+### Record Queries (14)
+| Key | SQL Technique | Purpose |
+|-----|--------------|---------|
+| `insert_record` | INSERT | Add record to session + collection |
+| `get_record` | INNER JOIN (records ↔ collections) | Fetch by ID, scoped to session |
+| `delete_record` | DELETE WHERE | Remove single record |
+| `update_record_text` | UPDATE SET | Change text only |
+| `list_records` | JOIN + ORDER BY + LIMIT | Records in a collection |
+| `count_records` | COUNT + JOIN | Records in a collection (count) |
+| `count_all_records` | COUNT WHERE | Total records in session |
+| `record_exists` | SELECT 1 LIMIT 1 | Fast existence check |
+| `all_record_ids` | SELECT ORDER BY | All IDs in session |
+| `collection_record_ids` | JOIN + ORDER BY | IDs in one collection |
+| `all_records_with_text` | SELECT WHERE | (id, text) pairs for rebuild |
+| `delete_records_in_collection` | DELETE + scalar subquery | Clear one collection |
+| `delete_all_records` | DELETE WHERE | Wipe session |
+| `list_record_ids` / `list_record_ids_in_collection` | SELECT + LIMIT | Paginated ID listing |
+
+### Metadata Queries (4)
+| Key | SQL Technique | Purpose |
+|-----|--------------|---------|
+| `insert_metadata` | INSERT | Add key/value tag |
+| `get_metadata` | SELECT WHERE | Retrieve all tags for record |
+| `delete_metadata` | DELETE WHERE | Drop all tags for record |
+| `filter_by_metadata` | JOIN (metadata ↔ records) + WHERE | Session-scoped metadata filter |
+
+### Statistics Queries (1)
+| Key | SQL Technique | Purpose |
+|-----|--------------|---------|
+| `stats_per_collection` | LEFT JOIN + GROUP BY | Collection → record count map |
+
+---
+
+## Data Models (7 Dataclasses)
+
+### `VectorRecord`
 ```python
 @dataclass
 class VectorRecord:
     id: str                    # "vec_a1b2c3d4"
-    vector: np.ndarray         # shape (384,) float32
-    text: str                  # "The cat sat on the mat"
-    metadata: Dict[str, Any]   # {"category": "animals"}
-    created_at: float          # 1713052800.0 (Unix timestamp)
+    vector: np.ndarray         # (384,) float32
+    text: str
+    metadata: Dict[str, Any]
+    created_at: float
     collection: str = "default"
 ```
+**New methods**: `to_dict()` for JSON serialization, `from_db_row(row, vector, metadata)` class method for hydration from SQLite.
 
-**What it is**: The complete representation of one record, assembled from all three storage layers:
-- `id`, `text`, `collection`, `created_at` come from SQLite `records` table
-- `metadata` comes from SQLite `metadata` table
-- `vector` comes from the NumPy `_vectors` matrix
-
-**Methods**:
-- `to_dict()` — Serializes the record (excluding the vector, which is too large for JSON)
-- `from_db_row(row, vector, metadata)` — Factory method that builds a VectorRecord from a SQLite row tuple, a NumPy vector, and a metadata dict
-
-#### `SearchResult` (Line 91)
+### `SearchResult`
 ```python
 @dataclass
 class SearchResult:
-    record: VectorRecord       # The matched record
-    score: float               # 0.9234 (similarity score)
-    rank: int                  # 1 = best match
-    metric: str                # "cosine" | "euclidean" | "dot"
+    record: VectorRecord
+    score: float
+    rank: int
+    metric: str
 ```
+**New method**: `to_dict()` — returns `{id, text, metadata, score (rounded to 6dp), rank, metric}`.
 
-**What it is**: One search result, wrapping a VectorRecord with ranking info.
-
-**Methods**:
-- `to_dict()` — Serializes for JSON output (rounds score to 6 decimals)
-
-#### `CollectionInfo` (Line 97)
+### `CollectionInfo` (NEW)
 ```python
 @dataclass
 class CollectionInfo:
-    name: str; dimension: int; count: int; created_at: float; description: str = ""
+    name: str
+    dimension: int
+    count: int
+    created_at: float
+    description: str = ""
 ```
 
-**What it is**: Summary information about a collection, returned by `list_collections()`.
-
-#### `DatabaseStats` (Line 101)
+### `DatabaseStats` (UPDATED)
 ```python
 @dataclass
 class DatabaseStats:
-    total_records: int; total_collections: int; dimension: int; 
-    memory_usage_bytes: int; storage_path: str; embedding_model: str; db_file: str
+    total_records: int
+    total_collections: int
+    dimension: int              # NEW
+    memory_usage_bytes: int     # NEW
+    storage_path: str           # NEW
+    embedding_model: str        # NEW
+    db_file: str                # NEW
+    session_name: str = ""
 ```
+Now includes all the information the web stats page needs: vector dimension, memory usage, model name, file paths.
 
-**What it is**: Overall database statistics, returned by `stats()`.
-
-### 4. ID Generator (Line 104)
+### `SessionInfo`
 ```python
-def generate_id(prefix="vec"):
-    return f"{prefix}_{uuid.uuid4().hex[:8]}"
+@dataclass
+class SessionInfo:
+    id: int
+    name: str
+    storage_path: str
+    created_at: float
+    last_used_at: float
+    msg_count: int
+    record_count: int
 ```
 
-**What it does**: Creates unique record IDs like `"vec_a1b2c3d4"` using UUID v4. The `hex[:8]` gives 8 hex characters = 4 billion possible values (collision probability is negligible).
-
-### 5. Self-Test (Lines 120–152)
-When run directly (`python ARCHITECTURE.py`), validates the schema by:
-1. Creating a temp SQLite database
-2. Running the schema creation
-3. Inserting a test record with metadata
-4. Verifying SELECT queries
-5. Testing cascade delete
-6. Creating and verifying dataclass instances
+### `MessageRow`
+```python
+@dataclass
+class MessageRow:
+    id: int
+    created_at: float
+    kind: str                  # 'search' | 'insert'
+    query_text: str
+    metric: Optional[str]
+    top_k: Optional[int]
+    category_filter: Optional[str]
+    result_count: Optional[int]
+    elapsed_ms: Optional[float]
+    response_ref: Optional[str]
+```
 
 ---
 
-## Import Map
+## `generate_id()` Function
 
-| Module | What It Imports | Why |
-|--------|----------------|-----|
-| `core/vector_store.py` | `VectorRecord`, `SearchResult`, `CollectionInfo`, `DatabaseStats`, `generate_id` | Build and return data model instances |
-| `storage/database.py` | `SCHEMA_SQL`, `SQL_QUERIES` | Execute the schema and queries |
-| `tests/*` | Various dataclasses | Create test fixtures |
+```python
+def generate_id(prefix: str = "vec") -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:8]}"
+```
+Produces IDs like `vec_a1b2c3d4`. UUID4 ensures collision resistance.
+
+---
+
+## Self-Test Block (`if __name__ == "__main__"`)
+
+**Lines 455–526**: Creates a temporary SQLite database, exercises every trigger and several JOIN/aggregate queries, and validates cascade deletes. Tests:
+
+1. Insert session → trigger creates default conversation + default collection
+2. Insert record via default collection → JOIN verify
+3. Insert message → trigger bumps `last_used_at` (subquery)
+4. `list_sessions_with_counts` → JOIN + GROUP BY aggregate
+5. Delete session → cascade wipes all 5 child tables
+
+All 5 assertions must pass or the schema is broken.

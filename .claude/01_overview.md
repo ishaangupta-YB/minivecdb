@@ -87,7 +87,7 @@ pytest>=7.0.0              # Testing framework
 
 ```
 minivecdb/
-├── ARCHITECTURE.py          # Central data models + SQL schema + constants
+├── ARCHITECTURE.py          # Central data models + SQL schema (v3.0: 6 tables + 3 triggers)
 ├── AGENTS.md                # AI assistant instructions
 ├── QUICK_REFERENCE.md       # Student quick-start guide
 ├── README.md                # Project readme
@@ -102,38 +102,51 @@ minivecdb/
 │
 ├── storage/                 # Database access layer
 │   ├── __init__.py          # Package init
-│   └── database.py          # SQLite wrapper (Repository pattern)
+│   ├── database.py          # SQLite wrapper (session-bound, v3.0)
+│   └── migrations.py        # Legacy per-session DB migration to shared DB
 │
 ├── cli/                     # Command-line interface
 │   ├── __init__.py          # Package init
 │   └── main.py              # argparse CLI with 10 subcommands
 │
-├── web/                     # Web interface (Flask)
-│   ├── app.py               # Flask application
+├── web/                     # Web interface (Flask, v3.0)
+│   ├── __init__.py          # Package init
+│   ├── app.py               # Flask application (10 routes + JSON API)
 │   └── templates/
-│       └── index.html       # Search UI template
+│       ├── _base.html       # Shared layout + CSS design system
+│       ├── select_session.html  # Session picker landing page
+│       ├── index.html       # Search form
+│       ├── results.html     # Search results
+│       ├── insert.html      # Insert form
+│       ├── stats.html       # Database statistics
+│       └── history.html     # Chat history timeline
 │
-├── tests/                   # Test suite
+├── tests/                   # Test suite + benchmarks
 │   ├── __init__.py
 │   ├── test_distance_metrics.py
+│   ├── test_sessions_schema.py  # v3.0 triggers, cascade, aggregates
 │   ├── test_edge_cases.py
 │   ├── test_integration.py
 │   ├── test_day5.py ... test_day10.py
+│   ├── benchmark.py         # Performance benchmark suite
+│   ├── benchmark_results.json  # Saved benchmark results
 │   ├── run_all_tests.py
 │   ├── run_tests_distance.py
 │   └── run_tests_embeddings.py
 │
 ├── demo/                    # Demo application
-│   └── semantic_search.py
+│   └── semantic_search.py   # 6-step end-to-end demo
 │
-├── data/                    # Dataset files for demo
+├── data/                    # Curated dataset (150+ docs)
+│   ├── sample_dataset.py    # Dataset loader
+│   └── generated/           # 5 JSON shard files
 │
 └── db_run/                  # Runtime artifacts (gitignored)
-    ├── .active_run           # Points to current run directory
+    ├── .active_run           # Points to current session folder
+    ├── minivecdb.db          # SHARED SQLite DB (all sessions)
     ├── model_cache/
     │   └── huggingface/      # Cached embedding model (~80MB)
     └── demo_<timestamp>_<random>/
-        ├── minivecdb.db      # SQLite database
         ├── vectors.npy       # NumPy vector matrix (N × 384)
         └── id_mapping.json   # Row index → record ID bridge
 ```
@@ -146,12 +159,16 @@ minivecdb/
 
 2. **SQLite for structured data, NumPy for vectors** — SQLite excels at relational queries but can't do fast matrix math. NumPy excels at batch numerical operations but can't do SQL queries. Using both gives us the best of both worlds.
 
-3. **Brute-force exact KNN** — For a learning project, brute-force search (compare query against ALL vectors) is simple to understand. Production databases use approximate methods (ANN) for speed.
+3. **Shared DB (v3.0)** — All sessions share a single `db_run/minivecdb.db` file. Sessions are isolated at the query layer via `session_id` foreign keys. Only vector artifacts (`vectors.npy`, `id_mapping.json`) are per-session on disk.
 
-4. **Auto-save after every mutation** — Every insert, update, or delete immediately persists to disk. No data loss on crash.
+4. **Brute-force exact KNN** — For a learning project, brute-force search (compare query against ALL vectors) is simple to understand. Production databases use approximate methods (ANN) for speed.
 
-5. **Context manager support** — `with VectorStore(...) as db:` ensures proper cleanup even on exceptions.
+5. **Auto-save after every mutation** — Every insert, update, or delete immediately persists to disk. No data loss on crash.
 
-6. **Managed run directories** — Each session creates a unique folder (`demo_<timestamp>_<random>`) under `db_run/`, preventing data collisions between experiments.
+6. **Context manager support** — `with VectorStore(...) as db:` ensures proper cleanup even on exceptions.
 
-7. **Embedding engine fallback** — If `sentence-transformers` isn't installed, a simple bag-of-words fallback keeps the rest of the system functional for testing.
+7. **Managed run directories** — Each session creates a unique folder (`demo_<timestamp>_<random>`) under `db_run/`, preventing data collisions between experiments.
+
+8. **Embedding engine fallback** — If `sentence-transformers` isn't installed, a simple bag-of-words fallback keeps the rest of the system functional for testing.
+
+9. **Legacy migration** — Pre-v3 per-session DBs are automatically migrated to the shared DB. The old file is renamed to `.legacy` — user data is never deleted.

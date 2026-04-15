@@ -1,0 +1,41 @@
+{% extends "_base.html" %}
+{% block title %}History &mdash; MiniVecDB{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2 style="margin-top:0;">Chat history</h2>
+    <p class="meta">
+      Every search and insert you run in this session is recorded here.
+      Only the user query is stored — not the individual result rows.
+    </p>
+
+    {% if messages %}
+      <div style="overflow-x: auto;">
+        <table>
+          <tr>
+            <th>When</th><th>Kind</th><th>Query</th>
+            <th>Metric</th><th>Top K</th><th>Category</th>
+            <th>Results</th><th>ms</th><th>Ref</th>
+          </tr>
+          {% for m in messages %}
+            <tr>
+              <td>{{ m.created_at_display }}</td>
+              <td><span class="pill">{{ m.kind }}</span></td>
+              <td>{{ m.query_text }}</td>
+              <td>{{ m.metric or "-" }}</td>
+              <td>{{ m.top_k if m.top_k is not none else "-" }}</td>
+              <td>{{ m.category_filter or "-" }}</td>
+              <td>{{ m.result_count if m.result_count is not none else "-" }}</td>
+              <td>{{ "%.2f"|format(m.elapsed_ms) if m.elapsed_ms is not none else "-" }}</td>
+              <td>{% if m.response_ref %}<code>{{ m.response_ref }}</code>{% else %}-{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    {% else %}
+      <p class="meta" style="margin:0;">
+        No messages logged yet in this session.
+      </p>
+    {% endif %}
+  </div>
+{% endblock %}

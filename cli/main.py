@@ -503,6 +503,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Default is ./db_run/model_cache/huggingface."
         ),
     )
+    parser.add_argument(
+        "--session",
+        type=str,
+        default=None,
+        help=(
+            "Bind to an existing session folder name under ./db_run/ "
+            "(e.g. --session demo_1776234747_3b4daf). Takes precedence "
+            "over the .active_run marker."
+        ),
+    )
 
     # --- Subcommand group ---
     # dest="command" means the chosen subcommand name is stored in
@@ -694,9 +704,23 @@ def main() -> None:
         if args.db_path is not None and args.new_run:
             print("Note: --new-run ignored because --db-path was provided.")
 
+        resolved_storage = args.db_path
+        if resolved_storage is None and args.session:
+            from core.runtime_paths import ensure_db_run_root
+
+            db_run_root = ensure_db_run_root()
+            candidate = os.path.abspath(os.path.join(db_run_root, args.session))
+            if not os.path.isdir(candidate):
+                print(
+                    f"Error: session '{args.session}' not found under "
+                    f"{db_run_root}."
+                )
+                sys.exit(2)
+            resolved_storage = candidate
+
         with VectorStore(
-            storage_path=args.db_path,
-            new_run=args.new_run,
+            storage_path=resolved_storage,
+            new_run=args.new_run and resolved_storage is None,
             run_prefix=args.run_prefix,
             model_cache_path=args.model_cache_path,
         ) as store:
