@@ -181,17 +181,18 @@ SQL_QUERIES = {
           FROM sessions WHERE name = ?
     """,
     "touch_session": "UPDATE sessions SET last_used_at = ? WHERE id = ?",
-    # JOIN + aggregate + GROUP BY — used by the session picker.
-    "list_sessions_with_counts": """
-        SELECT s.id, s.name, s.storage_path, s.created_at, s.last_used_at,
-               COUNT(m.id) AS msg_count,
-               (SELECT COUNT(*) FROM records r WHERE r.session_id = s.id) AS record_count
-          FROM sessions s
-          LEFT JOIN conversations c ON c.session_id = s.id
-          LEFT JOIN messages      m ON m.conversation_id = c.id
-         GROUP BY s.id
-         ORDER BY s.last_used_at DESC
+    "list_sessions": """
+        SELECT id, name, storage_path, created_at, last_used_at
+          FROM sessions
+         ORDER BY last_used_at DESC
     """,
+    "count_messages_in_session": """
+        SELECT COUNT(*)
+          FROM messages m
+          JOIN conversations c ON c.id = m.conversation_id
+         WHERE c.session_id = ?
+    """,
+    "count_records_in_session": "SELECT COUNT(*) FROM records WHERE session_id = ?",
 
     # ---- conversations ------------------------------------------
     "get_default_conversation_for_session": """
@@ -311,7 +312,9 @@ SQL_QUERIES = {
         SELECT DISTINCT m.record_id
           FROM metadata m
           JOIN records  r ON r.id = m.record_id
-         WHERE r.session_id = ? AND m.key = ? AND m.value = ?
+                 WHERE r.session_id = ?
+                     AND LOWER(TRIM(m.key)) = LOWER(TRIM(?))
+                     AND m.value = ?
     """,
 
     # ---- stats / aggregates -------------------------------------
@@ -403,7 +406,7 @@ class DatabaseStats:
 
 @dataclass
 class SessionInfo:
-    """One row from list_sessions_with_counts."""
+    """One listed session with derived message/record counts."""
     id: int
     name: str
     storage_path: str
@@ -504,10 +507,12 @@ if __name__ == "__main__":
     assert abs(touched - t_msg) < 1e-6, "trigger_touch_session_on_message failed"
     print(f"  OK Trigger 2: last_used_at advanced to {touched}")
 
-    # Aggregate + JOIN: list_sessions_with_counts.
-    rows = conn.execute(SQL_QUERIES["list_sessions_with_counts"]).fetchall()
-    assert rows and rows[0][5] == 1 and rows[0][6] == 1, "aggregate query failed"
-    print(f"  OK JOIN+GROUP BY: {rows[0][1]} -> {rows[0][5]} messages, {rows[0][6]} records")
+    # Session list + per-session count queries.
+    rows = conn.execute(SQL_QUERIES["list_sessions"]).fetchall()
+    (msg_count,) = conn.execute(SQL_QUERIES["count_messages_in_session"], (session_id,)).fetchone()
+    (record_count,) = conn.execute(SQL_QUERIES["count_records_in_session"], (session_id,)).fetchone()
+    assert rows and msg_count == 1 and record_count == 1, "session count queries failed"
+    print(f"  OK Session list+counts: {rows[0][1]} -> {msg_count} messages, {record_count} records")
 
     # Cascade delete.
     conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))

@@ -121,7 +121,7 @@ class TestCascadeDelete(unittest.TestCase):
 
 
 class TestAggregateQueries(unittest.TestCase):
-    """list_sessions_with_counts joins + aggregates; verify the numbers."""
+    """Session listing and count helper queries; verify the numbers."""
 
     def test_msg_count_and_record_count_per_session(self):
         conn = _fresh_conn()
@@ -163,14 +163,30 @@ class TestAggregateQueries(unittest.TestCase):
         )
         conn.commit()
 
-        rows = conn.execute(
-            SQL_QUERIES["list_sessions_with_counts"]
-        ).fetchall()
-        by_name = {r[1]: r for r in rows}
-        self.assertEqual(by_name["A"][5], 3)  # msg_count
-        self.assertEqual(by_name["A"][6], 2)  # record_count
-        self.assertEqual(by_name["B"][5], 1)
-        self.assertEqual(by_name["B"][6], 0)
+        rows = conn.execute(SQL_QUERIES["list_sessions"]).fetchall()
+        by_name = {r[1]: r[0] for r in rows}
+
+        (msg_a,) = conn.execute(
+            SQL_QUERIES["count_messages_in_session"],
+            (by_name["A"],),
+        ).fetchone()
+        (rec_a,) = conn.execute(
+            SQL_QUERIES["count_records_in_session"],
+            (by_name["A"],),
+        ).fetchone()
+        (msg_b,) = conn.execute(
+            SQL_QUERIES["count_messages_in_session"],
+            (by_name["B"],),
+        ).fetchone()
+        (rec_b,) = conn.execute(
+            SQL_QUERIES["count_records_in_session"],
+            (by_name["B"],),
+        ).fetchone()
+
+        self.assertEqual(msg_a, 3)
+        self.assertEqual(rec_a, 2)
+        self.assertEqual(msg_b, 1)
+        self.assertEqual(rec_b, 0)
 
 
 class TestDatabaseManagerSessionBinding(unittest.TestCase):

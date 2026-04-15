@@ -18,7 +18,7 @@
       <div class="error">{{ error }}</div>
     {% endif %}
 
-    <form action="{{ url_for('search') }}" method="post" style="margin-top: 0.5rem;">
+    <form action="{{ url_for('search') }}" method="post" style="margin-top: 0.5rem;" data-loading-message="Running search...">
       <div class="row">
         <div style="flex: 3 1 300px;">
           <label for="query">Refine query</label>
@@ -39,22 +39,23 @@
         </div>
         <div>
           <label for="category">Category</label>
-          <select id="category" name="category">
-            <option value="">(any)</option>
-            {% for cat in categories %}
-              <option value="{{ cat }}" {% if cat == category %}selected{% endif %}>{{ cat }}</option>
-            {% endfor %}
-          </select>
+          <input
+            type="text"
+            id="category"
+            name="category"
+            value="{{ category or '' }}"
+            placeholder="e.g. technology"
+          >
         </div>
       </div>
       <div style="margin-top: 1.5rem; display: flex; gap: 0.75rem;">
-        <button type="submit">
+        <button type="submit" data-loading-label="Searching..." data-loading-message="Running search...">
           <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
           Search again
         </button>
-        <a href="{{ url_for('index') }}" class="btn secondary">
+        <a href="{{ url_for('index') }}" class="btn secondary" data-loading-link data-loading-message="Opening session picker...">
           <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="15 18 9 12 15 6"></polyline>
           </svg>

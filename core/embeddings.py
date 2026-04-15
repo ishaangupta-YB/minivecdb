@@ -38,9 +38,8 @@ HOW EMBEDDING MODELS WORK (simplified):
 """
 
 import numpy as np
-import hashlib
 import time
-from typing import List, Optional, Union
+from typing import  List, Optional, Union
 import warnings
 import os
 import logging

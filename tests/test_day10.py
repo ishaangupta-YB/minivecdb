@@ -114,6 +114,20 @@ def test_exact_match():
         os.remove(db_path)
 
 
+def test_exact_match_case_insensitive_key():
+    """Metadata key lookups should be case-insensitive and trim-safe."""
+    db, db_path = create_test_db()
+    try:
+        result = db.filter_by_metadata({" Category ": "science"})
+        assert set(result) == {"rec_001", "rec_003"}, (
+            f"Expected rec_001 and rec_003, got {result}"
+        )
+        print("  PASS  test_exact_match_case_insensitive_key")
+    finally:
+        db.close()
+        os.remove(db_path)
+
+
 # ===============================================================
 # TEST 2: List match (OR) — match any value in the list
 # ===============================================================

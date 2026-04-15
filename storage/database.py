@@ -296,12 +296,14 @@ class DatabaseManager:
             sql = (
                 "SELECT DISTINCT m.record_id "
                 "FROM metadata m JOIN records r ON r.id = m.record_id "
-                f"WHERE r.session_id = ? AND m.key = ? AND m.value IN ({placeholders})"
+                f"WHERE r.session_id = ? "
+                "AND LOWER(TRIM(m.key)) = LOWER(TRIM(?)) "
+                f"AND m.value IN ({placeholders})"
             )
             params = [self.session_id, key] + [str(v) for v in value]
             cursor = self._conn.execute(sql, params)
         elif isinstance(value, dict):
-            conditions = ["r.session_id = ?", "m.key = ?"]
+            conditions = ["r.session_id = ?", "LOWER(TRIM(m.key)) = LOWER(TRIM(?))"]
             params: list = [self.session_id, key]
             for op, operand in value.items():
                 if op not in self._FILTER_OPERATORS:
@@ -478,23 +480,34 @@ class DatabaseManager:
     # SESSIONS / CONVERSATIONS / MESSAGES (new in v3.0)
     # ===============================================================
 
-    def list_sessions_with_counts(self) -> List[SessionInfo]:
-        """Every session in the shared DB with aggregate counts."""
-        rows = self._conn.execute(
-            SQL_QUERIES["list_sessions_with_counts"]
-        ).fetchall()
-        return [
-            SessionInfo(
-                id=row[0],
-                name=row[1],
-                storage_path=row[2],
-                created_at=row[3],
-                last_used_at=row[4],
-                msg_count=row[5],
-                record_count=row[6],
+    def list_sessions(self) -> List[SessionInfo]:
+        """Every session in the shared DB with derived message/record counts."""
+        rows = self._conn.execute(SQL_QUERIES["list_sessions"]).fetchall()
+        sessions: List[SessionInfo] = []
+        for row in rows:
+            session_id = int(row[0])
+            (msg_count,) = self._conn.execute(
+                SQL_QUERIES["count_messages_in_session"],
+                (session_id,),
+            ).fetchone()
+            (record_count,) = self._conn.execute(
+                SQL_QUERIES["count_records_in_session"],
+                (session_id,),
+            ).fetchone()
+
+            sessions.append(
+                SessionInfo(
+                    id=session_id,
+                    name=row[1],
+                    storage_path=row[2],
+                    created_at=row[3],
+                    last_used_at=row[4],
+                    msg_count=int(msg_count),
+                    record_count=int(record_count),
+                )
             )
-            for row in rows
-        ]
+
+        return sessions
 
     def log_message(
         self,

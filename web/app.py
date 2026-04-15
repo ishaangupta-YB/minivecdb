@@ -45,7 +45,6 @@ from core.runtime_paths import (
 )
 from core.vector_store import VectorStore
 from storage.database import DatabaseManager
-from storage.migrations import ensure_shared_db_exists
 
 
 # ---------------------------------------------------------------
@@ -113,13 +112,15 @@ def _get_categories(store: VectorStore) -> List[str]:
     """Distinct 'category' metadata values scoped to the active session."""
     rows = store.db._conn.execute(
         """
-        SELECT DISTINCT m.value
+                SELECT DISTINCT TRIM(m.value)
           FROM metadata m
           JOIN records r ON r.id = m.record_id
-         WHERE r.session_id = ? AND m.key = ?
-         ORDER BY m.value
+                 WHERE r.session_id = ?
+                     AND LOWER(TRIM(m.key)) = 'category'
+                     AND TRIM(m.value) != ''
+                 ORDER BY TRIM(m.value)
         """,
-        (store.db.session_id, "category"),
+                (store.db.session_id,),
     ).fetchall()
     return [row[0] for row in rows]
 
@@ -127,7 +128,7 @@ def _get_categories(store: VectorStore) -> List[str]:
 def _list_sessions_dicts() -> List[Dict[str, Any]]:
     """Open the shared DB read-only and return every session with aggregates."""
     db_run_root = ensure_db_run_root()
-    shared_db_path = ensure_shared_db_exists(db_run_root)
+    shared_db_path = get_shared_db_path()
 
     # A throwaway DatabaseManager is the cheapest way to hit the list query;
     # bind it to a neutral "__picker__" session that never gets written to.
@@ -137,7 +138,7 @@ def _list_sessions_dicts() -> List[Dict[str, Any]]:
         session_storage_path=db_run_root,
     )
     try:
-        sessions = tmp.list_sessions_with_counts()
+        sessions = tmp.list_sessions()
     finally:
         tmp.close()
 
@@ -214,7 +215,6 @@ def create_app() -> Flask:
             return redirect(url_for("index"))
         return render_template(
             "index.html",
-            categories=_get_categories(store),
             stats=store.stats(),
             active_session=store.session_name,
         )
@@ -246,7 +246,6 @@ def create_app() -> Flask:
                 metric=metric,
                 top_k=top_k,
                 category=category,
-                categories=_get_categories(store),
                 results=[],
                 elapsed_ms=0.0,
                 error="Please enter a search query.",
@@ -302,7 +301,6 @@ def create_app() -> Flask:
             metric=chosen_metric,
             top_k=top_k,
             category=category,
-            categories=_get_categories(store),
             results=results,
             elapsed_ms=elapsed_ms,
             error=error,
@@ -497,7 +495,7 @@ def create_app() -> Flask:
 # ---------------------------------------------------------------
 def main() -> None:
     """Start the Flask dev server without auto-seeding any dataset."""
-    ensure_shared_db_exists(ensure_db_run_root())
+    get_shared_db_path()
 
     app = create_app()
     print("[MiniVecDB] Web UI ready at http://localhost:5000")

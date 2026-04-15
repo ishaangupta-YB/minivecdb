@@ -55,6 +55,7 @@ from core.embeddings import create_embedding_engine
 from core.runtime_paths import (
     get_model_cache_path,
     get_project_root,
+    get_shared_db_path,
     is_within_db_run,
     read_active_run_path,
     resolve_storage_path,
@@ -62,7 +63,6 @@ from core.runtime_paths import (
 )
 from core.distance_metrics import get_metric
 from storage.database import DatabaseManager
-from storage.migrations import ensure_shared_db_exists
 
 
 logger = logging.getLogger(__name__)
@@ -202,9 +202,7 @@ class VectorStore:
         # Legacy/test paths outside db_run get their own per-folder DB,
         # so existing fixtures keep working unchanged.
         if is_within_db_run(self.storage_path):
-            db_path = ensure_shared_db_exists(
-                os.path.dirname(os.path.abspath(self.storage_path))
-            )
+            db_path = get_shared_db_path()
         else:
             db_path = os.path.join(self.storage_path, "minivecdb.db")
 
@@ -277,7 +275,11 @@ class VectorStore:
         for key, value in metadata.items():
             if not isinstance(key, str) or not key.strip():
                 raise ValueError("metadata keys must be non-empty strings.")
-            normalized[key] = str(value)
+            clean_key = key.strip()
+            if clean_key.lower() == "category":
+                # Keep category key canonical so UI filters are reliable.
+                clean_key = "category"
+            normalized[clean_key] = str(value).strip()
         return normalized
 
     @staticmethod
