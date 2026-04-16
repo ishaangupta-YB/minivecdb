@@ -8,8 +8,8 @@
       Query: <strong>{{ query or "(empty)" }}</strong>
       &middot; metric: <code>{{ metric }}</code>
       &middot; top_k: <code>{{ top_k }}</code>
-      {% if category %}
-        &middot; category: <code>{{ category }}</code>
+      {% if filter_key and filter_value %}
+        &middot; filter: <code>{{ filter_key }}: {{ filter_value }}</code>
       {% endif %}
       &middot; {{ "%.2f"|format(elapsed_ms) }} ms
     </p>
@@ -18,7 +18,8 @@
       <div class="error">{{ error }}</div>
     {% endif %}
 
-    <form action="{{ url_for('search') }}" method="post" style="margin-top: 0.5rem;" data-loading-message="Running search...">
+    <form id="refine-form" action="{{ url_for('search') }}" method="post" style="margin-top: 0.5rem;" data-loading-message="Running search...">
+      <div id="filter-error" class="error" style="display:none;"></div>
       <div class="row">
         <div style="flex: 3 1 300px;">
           <label for="query">Refine query</label>
@@ -38,13 +39,23 @@
                  value="{{ top_k }}" min="1" max="50">
         </div>
         <div>
-          <label for="category">Category</label>
+          <label for="filter_key">Filter key</label>
           <input
             type="text"
-            id="category"
-            name="category"
-            value="{{ category or '' }}"
-            placeholder="e.g. technology"
+            id="filter_key"
+            name="filter_key"
+            value="{{ filter_key or '' }}"
+            placeholder="e.g. category"
+          >
+        </div>
+        <div>
+          <label for="filter_value">Filter value</label>
+          <input
+            type="text"
+            id="filter_value"
+            name="filter_value"
+            value="{{ filter_value or '' }}"
+            placeholder="e.g. Technology"
           >
         </div>
       </div>
@@ -93,4 +104,28 @@
       <p class="meta" style="margin:0;">No matching results.</p>
     </div>
   {% endif %}
+
+  <script>
+    (function () {
+      var form = document.getElementById('refine-form');
+      var errBox = document.getElementById('filter-error');
+      if (!form || !errBox) return;
+
+      form.addEventListener('submit', function (e) {
+        var key = form.filter_key.value.trim();
+        var val = form.filter_value.value.trim();
+        if ((key && !val) || (!key && val)) {
+          e.preventDefault();
+          var missing = key ? 'filter value' : 'filter key';
+          errBox.textContent = 'Incomplete filter: please provide the ' + missing + ' too, or clear both fields.';
+          errBox.style.display = '';
+          return;
+        }
+        errBox.style.display = 'none';
+      });
+
+      form.filter_key.addEventListener('input', function () { errBox.style.display = 'none'; });
+      form.filter_value.addEventListener('input', function () { errBox.style.display = 'none'; });
+    })();
+  </script>
 {% endblock %}

@@ -108,23 +108,6 @@ def _format_score(score: float, metric: str) -> str:
     return f"{score:.4f}"
 
 
-def _get_categories(store: VectorStore) -> List[str]:
-    """Distinct 'category' metadata values scoped to the active session."""
-    rows = store.db._conn.execute(
-        """
-                SELECT DISTINCT TRIM(m.value)
-          FROM metadata m
-          JOIN records r ON r.id = m.record_id
-                 WHERE r.session_id = ?
-                     AND LOWER(TRIM(m.key)) = 'category'
-                     AND TRIM(m.value) != ''
-                 ORDER BY TRIM(m.value)
-        """,
-                (store.db.session_id,),
-    ).fetchall()
-    return [row[0] for row in rows]
-
-
 def _list_sessions_dicts() -> List[Dict[str, Any]]:
     """Open the shared DB read-only and return every session with aggregates."""
     db_run_root = ensure_db_run_root()
@@ -231,7 +214,8 @@ def create_app() -> Flask:
         src = request.form if request.method == "POST" else request.args
         query = (src.get("query") or "").strip()
         metric = (src.get("metric") or "cosine").strip().lower()
-        category = (src.get("category") or "").strip()
+        filter_key = (src.get("filter_key") or "").strip()
+        filter_value = (src.get("filter_value") or "").strip()
 
         try:
             top_k = int(src.get("top_k") or 5)
@@ -245,7 +229,8 @@ def create_app() -> Flask:
                 query="",
                 metric=metric,
                 top_k=top_k,
-                category=category,
+                filter_key=filter_key,
+                filter_value=filter_value,
                 results=[],
                 elapsed_ms=0.0,
                 error="Please enter a search query.",
@@ -253,9 +238,28 @@ def create_app() -> Flask:
                 active_session=store.session_name,
             )
 
+        # Both filter fields must be filled together or left empty.
+        has_key = bool(filter_key)
+        has_val = bool(filter_value)
+        if has_key != has_val:
+            missing = "filter value" if has_key else "filter key"
+            return render_template(
+                "results.html",
+                query=query,
+                metric=metric,
+                top_k=top_k,
+                filter_key=filter_key,
+                filter_value=filter_value,
+                results=[],
+                elapsed_ms=0.0,
+                error=f"Incomplete filter: please provide the {missing} too, or clear both fields.",
+                format_score=_format_score,
+                active_session=store.session_name,
+            )
+
         filters: Optional[Dict[str, Any]] = None
-        if category:
-            filters = {"category": category}
+        if filter_key and filter_value:
+            filters = {filter_key: filter_value}
 
         chosen_metric = metric if metric in {"cosine", "euclidean", "dot"} else "cosine"
         t0 = time.time()
@@ -269,13 +273,15 @@ def create_app() -> Flask:
             error = str(exc)
         elapsed_ms = (time.time() - t0) * 1000.0
 
+        # Log the filter as "key:value" so history is human-readable.
+        filter_log = f"{filter_key}:{filter_value}" if filter_key and filter_value else None
         try:
             store.db.log_message(
                 kind="search",
                 query_text=query,
                 metric=chosen_metric,
                 top_k=top_k,
-                category_filter=category or None,
+                category_filter=filter_log,
                 result_count=len(raw_results),
                 elapsed_ms=round(elapsed_ms, 3),
             )
@@ -300,7 +306,8 @@ def create_app() -> Flask:
             query=query,
             metric=chosen_metric,
             top_k=top_k,
-            category=category,
+            filter_key=filter_key,
+            filter_value=filter_value,
             results=results,
             elapsed_ms=elapsed_ms,
             error=error,
@@ -393,6 +400,47 @@ def create_app() -> Flask:
         )
 
     # ==========================================================
+    # GET /records  -- browse all records in the active session
+    # ==========================================================
+    @app.route("/records", methods=["GET"])
+    def records():
+        store = _active_store()
+        if store is None:
+            return redirect(url_for("index"))
+
+        collection = (request.args.get("collection") or "").strip() or None
+        try:
+            page = max(1, int(request.args.get("page") or 1))
+        except (TypeError, ValueError):
+            page = 1
+        per_page = 25
+
+        total = store.db.count_browsable_records(collection=collection)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, total_pages)
+        offset = (page - 1) * per_page
+
+        rows = store.db.browse_records(
+            collection=collection, limit=per_page, offset=offset,
+        )
+
+        for row in rows:
+            row["created_at_display"] = _format_time(row["created_at"])
+
+        collections = store.list_collections()
+
+        return render_template(
+            "records.html",
+            records=rows,
+            collections=collections,
+            active_collection=collection,
+            page=page,
+            total_pages=total_pages,
+            total_records=total,
+            active_session=store.session_name,
+        )
+
+    # ==========================================================
     # GET /history  -- chronological message timeline
     # ==========================================================
     @app.route("/history", methods=["GET"])
@@ -446,8 +494,21 @@ def create_app() -> Flask:
             return jsonify({"error": "top_k must be an integer."}), 400
         top_k = max(1, min(top_k, 100))
 
-        category = (request.args.get("category") or "").strip()
-        filters = {"category": category} if category else None
+        filter_key = (request.args.get("filter_key") or "").strip()
+        filter_value = (request.args.get("filter_value") or "").strip()
+
+        # Backwards compat: bare "category" param maps to key="category".
+        if not filter_key and not filter_value:
+            cat = (request.args.get("category") or "").strip()
+            if cat:
+                filter_key = "category"
+                filter_value = cat
+
+        if bool(filter_key) != bool(filter_value):
+            missing = "filter_value" if filter_key else "filter_key"
+            return jsonify({"error": f"Incomplete filter: '{missing}' is required when the other is set."}), 400
+
+        filters = {filter_key: filter_value} if filter_key and filter_value else None
 
         t0 = time.time()
         try:
@@ -458,13 +519,14 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 400
         elapsed_ms = (time.time() - t0) * 1000.0
 
+        filter_log = f"{filter_key}:{filter_value}" if filter_key and filter_value else None
         try:
             store.db.log_message(
                 kind="search",
                 query_text=query,
                 metric=metric,
                 top_k=top_k,
-                category_filter=category or None,
+                category_filter=filter_log,
                 result_count=len(results),
                 elapsed_ms=round(elapsed_ms, 3),
             )
@@ -476,7 +538,8 @@ def create_app() -> Flask:
             "query": query,
             "metric": metric,
             "top_k": top_k,
-            "category": category or None,
+            "filter_key": filter_key or None,
+            "filter_value": filter_value or None,
             "elapsed_ms": round(elapsed_ms, 3),
             "count": len(results),
             "results": [r.to_dict() for r in results],

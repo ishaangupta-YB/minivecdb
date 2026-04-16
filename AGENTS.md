@@ -183,11 +183,11 @@ Routes:
 - `POST /session/new` — create run, rebind VectorStore, redirect to search page.
 - `POST /session/switch` — rebind VectorStore to chosen session, redirect.
 - `GET /search-page` — search form; redirects to `/` if no active session.
-- `POST /search` — runs query, logs a `messages` row with `kind='search'`.
+- `POST /search` — runs query, logs a `messages` row with `kind='search'`. Accepts `filter_key` + `filter_value` for arbitrary metadata pre-filtering (e.g. `category:Science`, `source:sample`, `book:harry`).
 - `POST /insert` — adds record, logs a `messages` row with `kind='insert'` and `response_ref=<new_id>`.
 - `GET /history` — renders message timeline from `db.get_history()`.
 - `GET /stats` — per-session aggregate stats.
-- `GET /api/search` — JSON endpoint, same logging as `/search`.
+- `GET /api/search` — JSON endpoint, same logging as `/search`. Accepts `filter_key` + `filter_value` params (also supports legacy `category` param for backwards compat).
 
 ## Coding Standards
 

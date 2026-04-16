@@ -456,6 +456,7 @@
         {% if active_session %}
           <a href="{{ url_for('search_page') }}" data-loading-link data-loading-message="Opening search...">Search</a>
           <a href="{{ url_for('insert') }}" data-loading-link data-loading-message="Opening insert page...">Insert</a>
+          <a href="{{ url_for('records') }}" data-loading-link data-loading-message="Loading records...">Records</a>
           <a href="{{ url_for('history') }}" data-loading-link data-loading-message="Loading history...">History</a>
           <a href="{{ url_for('stats') }}" data-loading-link data-loading-message="Loading stats...">Stats</a>
         {% endif %}
@@ -568,7 +569,7 @@
         var forms = document.querySelectorAll("form");
         forms.forEach(function (form) {
           form.addEventListener("submit", function (event) {
-            if (form.dataset.noLoader === "true") {
+            if (event.defaultPrevented || form.dataset.noLoader === "true") {
               return;
             }
 

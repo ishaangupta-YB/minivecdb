@@ -1,0 +1,272 @@
+{% extends "_base.html" %}
+{% block title %}Records &mdash; MiniVecDB{% endblock %}
+
+{% block content %}
+  <style>
+    .records-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .collection-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+
+    .collection-tab {
+      display: inline-block;
+      padding: 0.35rem 0.85rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      border-radius: 9999px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: var(--transition);
+    }
+
+    .collection-tab:hover {
+      background: var(--secondary);
+      color: var(--text-main);
+    }
+
+    .collection-tab.active {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+
+    .record-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1rem;
+      box-shadow: var(--shadow-sm);
+      transition: var(--transition);
+    }
+
+    .record-card:hover {
+      box-shadow: var(--shadow);
+      border-color: #d1d5db;
+    }
+
+    .record-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .record-id {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 0.8rem;
+      color: var(--accent);
+      font-weight: 500;
+      letter-spacing: -0.01em;
+    }
+
+    .record-collection {
+      font-size: 0.75rem;
+      font-weight: 500;
+      padding: 0.15rem 0.55rem;
+      border-radius: 9999px;
+      background: var(--accent-light);
+      color: var(--accent);
+      border: 1px solid #dbeafe;
+    }
+
+    .record-text {
+      margin: 0.5rem 0 0.65rem;
+      line-height: 1.7;
+      font-size: 0.925rem;
+      color: var(--text-main);
+      word-break: break-word;
+    }
+
+    .record-meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem;
+      margin-top: 0.5rem;
+    }
+
+    .record-timestamp {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+      margin-top: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .pagination a, .pagination span {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 36px;
+      height: 36px;
+      padding: 0 0.5rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
+      text-decoration: none;
+      transition: var(--transition);
+    }
+
+    .pagination a {
+      color: var(--text-main);
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+
+    .pagination a:hover {
+      background: var(--secondary);
+    }
+
+    .pagination .current-page {
+      background: var(--primary);
+      color: #fff;
+      border: 1px solid var(--primary);
+    }
+
+    .pagination .disabled {
+      color: var(--text-muted);
+      opacity: 0.4;
+      pointer-events: none;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+
+    .records-count {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+  </style>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Records</h2>
+    <p class="meta">
+      Browse all stored documents in this session.
+      Each record includes its text, collection, metadata tags, and timestamp.
+    </p>
+
+    <div class="records-toolbar">
+      <div class="collection-tabs">
+        {% set base_url = url_for('records') %}
+        <a href="{{ base_url }}"
+           class="collection-tab {% if not active_collection %}active{% endif %}"
+           data-loading-link data-loading-message="Loading all records...">
+          All
+        </a>
+        {% for c in collections %}
+          <a href="{{ base_url }}?collection={{ c.name }}"
+             class="collection-tab {% if active_collection == c.name %}active{% endif %}"
+             data-loading-link data-loading-message="Loading {{ c.name }} records...">
+            {{ c.name }}
+            <span style="opacity:0.6; margin-left:0.15rem;">({{ c.count }})</span>
+          </a>
+        {% endfor %}
+      </div>
+      <span class="records-count">
+        {{ total_records }} record{{ "s" if total_records != 1 else "" }}
+      </span>
+    </div>
+  </div>
+
+  {% if records %}
+    {% for r in records %}
+      <div class="record-card">
+        <div class="record-header">
+          <span class="record-id">{{ r.id }}</span>
+          <span class="record-collection">{{ r.collection }}</span>
+        </div>
+        <p class="record-text">{{ r.text }}</p>
+        <div class="record-meta-row">
+          {% if r.metadata %}
+            {% for k, v in r.metadata.items() %}
+              <span class="pill">{{ k }}: {{ v }}</span>
+            {% endfor %}
+          {% endif %}
+          <span class="record-timestamp">{{ r.created_at_display }}</span>
+        </div>
+      </div>
+    {% endfor %}
+
+    {% if total_pages > 1 %}
+      <div class="pagination">
+        {# Build base href respecting active collection filter #}
+        {% set page_base = url_for('records') %}
+        {% if active_collection %}
+          {% set page_base = page_base ~ "?collection=" ~ active_collection ~ "&page=" %}
+        {% else %}
+          {% set page_base = page_base ~ "?page=" %}
+        {% endif %}
+
+        {% if page > 1 %}
+          <a href="{{ page_base }}{{ page - 1 }}" data-loading-link data-loading-message="Loading page...">&laquo; Prev</a>
+        {% else %}
+          <span class="disabled">&laquo; Prev</span>
+        {% endif %}
+
+        {% set window = 2 %}
+        {% set start_page = [1, page - window] | max %}
+        {% set end_page = [total_pages, page + window] | min %}
+
+        {% if start_page > 1 %}
+          <a href="{{ page_base }}1" data-loading-link data-loading-message="Loading page...">1</a>
+          {% if start_page > 2 %}
+            <span style="color: var(--text-muted); padding: 0 0.15rem;">&hellip;</span>
+          {% endif %}
+        {% endif %}
+
+        {% for p in range(start_page, end_page + 1) %}
+          {% if p == page %}
+            <span class="current-page">{{ p }}</span>
+          {% else %}
+            <a href="{{ page_base }}{{ p }}" data-loading-link data-loading-message="Loading page...">{{ p }}</a>
+          {% endif %}
+        {% endfor %}
+
+        {% if end_page < total_pages %}
+          {% if end_page < total_pages - 1 %}
+            <span style="color: var(--text-muted); padding: 0 0.15rem;">&hellip;</span>
+          {% endif %}
+          <a href="{{ page_base }}{{ total_pages }}" data-loading-link data-loading-message="Loading page...">{{ total_pages }}</a>
+        {% endif %}
+
+        {% if page < total_pages %}
+          <a href="{{ page_base }}{{ page + 1 }}" data-loading-link data-loading-message="Loading page...">Next &raquo;</a>
+        {% else %}
+          <span class="disabled">Next &raquo;</span>
+        {% endif %}
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="card">
+      <p class="meta" style="margin:0;">
+        {% if active_collection %}
+          No records in the <strong>{{ active_collection }}</strong> collection.
+        {% else %}
+          No records in this session yet. Use
+          <a href="{{ url_for('insert') }}" data-loading-link data-loading-message="Opening insert page...">Insert</a>
+          to add documents.
+        {% endif %}
+      </p>
+    </div>
+  {% endif %}
+{% endblock %}

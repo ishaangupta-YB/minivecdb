@@ -303,6 +303,30 @@ SQL_QUERIES = {
          LIMIT ?
     """,
 
+    # ---- record browsing (session-scoped, with pagination) ------
+    "browse_records_in_session": """
+        SELECT r.id, r.text, c.name AS collection, r.created_at
+          FROM records r
+          JOIN collections c ON c.id = r.collection_id
+         WHERE r.session_id = ?
+         ORDER BY r.created_at DESC
+         LIMIT ? OFFSET ?
+    """,
+    "browse_records_in_collection": """
+        SELECT r.id, r.text, c.name AS collection, r.created_at
+          FROM records r
+          JOIN collections c ON c.id = r.collection_id
+         WHERE r.session_id = ? AND c.name = ?
+         ORDER BY r.created_at DESC
+         LIMIT ? OFFSET ?
+    """,
+    "count_records_in_collection": """
+        SELECT COUNT(*)
+          FROM records r
+          JOIN collections c ON c.id = r.collection_id
+         WHERE r.session_id = ? AND c.name = ?
+    """,
+
     # ---- metadata (scoped via JOIN on records.session_id) -------
     "insert_metadata": "INSERT INTO metadata (record_id, key, value) VALUES (?, ?, ?)",
     "get_metadata":    "SELECT key, value FROM metadata WHERE record_id = ?",
@@ -314,7 +338,7 @@ SQL_QUERIES = {
           JOIN records  r ON r.id = m.record_id
                  WHERE r.session_id = ?
                      AND LOWER(TRIM(m.key)) = LOWER(TRIM(?))
-                     AND m.value = ?
+                     AND LOWER(TRIM(m.value)) = LOWER(TRIM(?))
     """,
 
     # ---- stats / aggregates -------------------------------------

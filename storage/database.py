@@ -19,7 +19,7 @@ import os
 import sqlite3
 import time
 from contextlib import contextmanager
-from typing import Optional, List, Dict, Tuple, Iterator
+from typing import Any, Optional, List, Dict, Tuple, Iterator
 
 # ---------------------------------------------------------------
 # Import schema + parameterised queries from ARCHITECTURE.py.
@@ -265,7 +265,7 @@ class DatabaseManager:
         "$lt":  "CAST(m.value AS REAL) < ?",
         "$gte": "CAST(m.value AS REAL) >= ?",
         "$lte": "CAST(m.value AS REAL) <= ?",
-        "$ne":  "m.value != ?",
+        "$ne":  "LOWER(TRIM(m.value)) != LOWER(TRIM(?))",
     }
 
     def filter_by_metadata(self, filters: Dict[str, object]) -> List[str]:
@@ -292,13 +292,13 @@ class DatabaseManager:
         elif isinstance(value, list):
             if len(value) == 0:
                 return set()
-            placeholders = ", ".join("?" for _ in value)
+            placeholders = ", ".join("LOWER(TRIM(?))" for _ in value)
             sql = (
                 "SELECT DISTINCT m.record_id "
                 "FROM metadata m JOIN records r ON r.id = m.record_id "
                 f"WHERE r.session_id = ? "
                 "AND LOWER(TRIM(m.key)) = LOWER(TRIM(?)) "
-                f"AND m.value IN ({placeholders})"
+                f"AND LOWER(TRIM(m.value)) IN ({placeholders})"
             )
             params = [self.session_id, key] + [str(v) for v in value]
             cursor = self._conn.execute(sql, params)
@@ -475,6 +475,63 @@ class DatabaseManager:
             SQL_QUERIES["stats_per_collection"], (self.session_id,)
         )
         return dict(cursor.fetchall())
+
+    # ===============================================================
+    # RECORD BROWSING (paginated, with metadata)
+    # ===============================================================
+
+    def browse_records(
+        self,
+        collection: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return records with metadata for the bound session, paginated.
+
+        Each item is a dict with keys: id, text, collection, created_at,
+        metadata (dict of key-value pairs).
+
+        When `collection` is None, returns records across all collections.
+        """
+        if collection:
+            self._require_non_empty_string(collection, "collection")
+            rows = self._conn.execute(
+                SQL_QUERIES["browse_records_in_collection"],
+                (self.session_id, collection, limit, offset),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                SQL_QUERIES["browse_records_in_session"],
+                (self.session_id, limit, offset),
+            ).fetchall()
+
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            record_id, text, coll_name, created_at = row
+            meta = self.get_metadata(record_id)
+            results.append({
+                "id": record_id,
+                "text": text,
+                "collection": coll_name,
+                "created_at": created_at,
+                "metadata": meta,
+            })
+        return results
+
+    def count_browsable_records(self, collection: Optional[str] = None) -> int:
+        """Total record count for pagination (session-scoped)."""
+        if collection:
+            self._require_non_empty_string(collection, "collection")
+            row = self._conn.execute(
+                SQL_QUERIES["count_records_in_collection"],
+                (self.session_id, collection),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                SQL_QUERIES["count_all_records"],
+                (self.session_id,),
+            ).fetchone()
+        return row[0]
 
     # ===============================================================
     # SESSIONS / CONVERSATIONS / MESSAGES (new in v3.0)
