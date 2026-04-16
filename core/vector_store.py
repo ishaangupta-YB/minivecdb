@@ -1128,14 +1128,28 @@ class VectorStore:
         # that can be compared against all stored vectors.
         query_vector = self.embedding_engine.encode(query)
         query_vector = np.asarray(query_vector, dtype=np.float32)
+        if query_vector.ndim == 2 and query_vector.shape[0] == 1:
+            query_vector = query_vector[0]
+        if query_vector.ndim != 1 or query_vector.shape[0] != self.dimension:
+            raise ValueError(
+                "Embedding dimension mismatch for query: "
+                f"expected ({self.dimension},), got {query_vector.shape}."
+            )
+
+        normalized_filters: Optional[Dict[str, Any]] = None
+        if filters is not None:
+            if not isinstance(filters, dict):
+                raise ValueError("filters must be a dictionary when provided.")
+            if filters:
+                normalized_filters = filters
 
         # --- Step 3: Determine candidate vectors ---
         # If filters or collection are specified, we only search a
         # subset of vectors.  This is "pre-filtering" — it reduces
         # the number of similarity computations needed.
-        if filters is not None:
+        if normalized_filters is not None:
             # SQL metadata filter → get matching row indices
-            indices = self._get_filtered_indices(filters, collection)
+            indices = self._get_filtered_indices(normalized_filters, collection)
             if len(indices) == 0:
                 return []  # No records match the filters
             candidate_vectors = self._vectors[indices]
@@ -1241,6 +1255,13 @@ class VectorStore:
             for rid in matching_ids
             if rid in self._id_to_index
         ]
+
+        if matching_ids and not indices:
+            logger.warning(
+                "Metadata filter matched %d SQLite IDs but none exist "
+                "in in-memory vector mapping.",
+                len(matching_ids),
+            )
 
         return np.array(sorted(indices), dtype=np.intp)
 

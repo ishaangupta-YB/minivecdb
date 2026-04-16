@@ -18,6 +18,7 @@
 
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -43,6 +44,7 @@ from core.runtime_paths import (
     read_active_run_path,
     set_active_run_path,
 )
+from core.file_processor import ALLOWED_EXTENSIONS, MAX_FILE_SIZE_BYTES, process_file
 from core.vector_store import VectorStore
 from storage.database import DatabaseManager
 
@@ -271,6 +273,10 @@ def create_app() -> Flask:
         except ValueError as exc:
             raw_results = []
             error = str(exc)
+        except Exception as exc:
+            raw_results = []
+            error = "Unexpected search error. Please try again."
+            app.logger.exception("Unexpected search failure: %s", exc)
         elapsed_ms = (time.time() - t0) * 1000.0
 
         # Log the filter as "key:value" so history is human-readable.
@@ -334,7 +340,23 @@ def create_app() -> Flask:
         )
 
     # ==========================================================
-    # GET/POST /insert
+    # Shared context for the insert page (text + upload tabs)
+    # ==========================================================
+    def _insert_ctx(store: VectorStore) -> Dict[str, Any]:
+        """Base template variables for insert.html (both tabs)."""
+        return {
+            "collections": store.list_collections(),
+            "max_mb": MAX_FILE_SIZE_BYTES // (1024 * 1024),
+            "active_session": store.session_name,
+            "inserted_id": None,
+            "upload_result": None,
+            "error": None,
+            "text": "",
+            "active_tab": "text",
+        }
+
+    # ==========================================================
+    # GET/POST /insert  -- paste text (+ tab for file upload)
     # ==========================================================
     @app.route("/insert", methods=["GET", "POST"])
     def insert():
@@ -342,24 +364,15 @@ def create_app() -> Flask:
         if store is None:
             return redirect(url_for("index"))
 
+        ctx = _insert_ctx(store)
+
         if request.method == "GET":
-            return render_template(
-                "insert.html",
-                inserted_id=None,
-                error=None,
-                text="",
-                active_session=store.session_name,
-            )
+            return render_template("insert.html", **ctx)
 
         text = (request.form.get("text") or "").strip()
         if not text:
-            return render_template(
-                "insert.html",
-                inserted_id=None,
-                error="Text is required.",
-                text="",
-                active_session=store.session_name,
-            )
+            ctx["error"] = "Text is required."
+            return render_template("insert.html", **ctx)
 
         metadata: Dict[str, Any] = {}
         keys = request.form.getlist("meta_key")
@@ -390,14 +403,116 @@ def create_app() -> Flask:
         except Exception:
             pass
 
-        return render_template(
-            "insert.html",
-            inserted_id=new_id,
-            error=error,
-            text=text if error else "",
-            metadata=metadata,
-            active_session=store.session_name,
-        )
+        ctx["inserted_id"] = new_id
+        ctx["error"] = error
+        ctx["text"] = text if error else ""
+        return render_template("insert.html", **ctx)
+
+    # ==========================================================
+    # POST /upload  -- file upload (TXT, CSV, Excel)
+    #   Lives on the "Upload file" tab of the insert page.
+    # ==========================================================
+    @app.route("/upload", methods=["GET", "POST"])
+    def upload():
+        store = _active_store()
+        if store is None:
+            return redirect(url_for("index"))
+
+        # GET requests just show the insert page with the file tab open.
+        if request.method == "GET":
+            ctx = _insert_ctx(store)
+            ctx["active_tab"] = "file"
+            return render_template("insert.html", **ctx)
+
+        ctx = _insert_ctx(store)
+        ctx["active_tab"] = "file"
+
+        # --- Validate uploaded file presence -----------------------
+        if "file" not in request.files:
+            ctx["error"] = "No file was uploaded."
+            return render_template("insert.html", **ctx)
+
+        uploaded = request.files["file"]
+        if not uploaded.filename:
+            ctx["error"] = "No file was selected."
+            return render_template("insert.html", **ctx)
+
+        original_filename = uploaded.filename
+        ext = os.path.splitext(original_filename)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            ctx["error"] = (
+                f"Unsupported file type '{ext}'. "
+                f"Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+            )
+            return render_template("insert.html", **ctx)
+
+        collection = (request.form.get("collection") or "default").strip()
+
+        extra_meta: Dict[str, Any] = {}
+        meta_keys = request.form.getlist("meta_key")
+        meta_values = request.form.getlist("meta_value")
+        for k, v in zip(meta_keys, meta_values):
+            k = (k or "").strip()
+            v = (v or "").strip()
+            if k and v:
+                extra_meta[k] = v
+
+        # --- Save to temp file, process, and insert ----------------
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
+        try:
+            os.close(tmp_fd)
+            uploaded.save(tmp_path)
+
+            t0 = time.time()
+            texts, metadata_list = process_file(
+                tmp_path, original_filename,
+                max_chars=500, overlap=50,
+            )
+
+            if extra_meta:
+                for meta in metadata_list:
+                    for k, v in extra_meta.items():
+                        if k not in meta:
+                            meta[k] = v
+
+            ids = store.insert_batch(
+                texts=texts,
+                metadata_list=metadata_list,
+                collection=collection,
+            )
+            elapsed_ms = (time.time() - t0) * 1000.0
+
+            try:
+                store.db.log_message(
+                    kind="insert",
+                    query_text=f"[file upload] {original_filename}",
+                    result_count=len(ids),
+                    elapsed_ms=round(elapsed_ms, 3),
+                    response_ref=ids[0] if ids else None,
+                )
+            except Exception:
+                pass
+
+            ctx["collections"] = store.list_collections()
+            ctx["upload_result"] = {
+                "filename": original_filename,
+                "chunk_count": len(ids),
+                "collection": collection,
+                "elapsed_ms": round(elapsed_ms, 1),
+                "sample_ids": ids[:5],
+                "remaining": max(0, len(ids) - 5),
+            }
+            return render_template("insert.html", **ctx)
+
+        except ValueError as exc:
+            ctx["error"] = str(exc)
+            return render_template("insert.html", **ctx)
+        except Exception as exc:
+            ctx["error"] = f"Unexpected error: {exc}"
+            return render_template("insert.html", **ctx)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
     # ==========================================================
     # GET /records  -- browse all records in the active session
@@ -517,6 +632,9 @@ def create_app() -> Flask:
             )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            app.logger.exception("Unexpected API search failure: %s", exc)
+            return jsonify({"error": "Unexpected search error."}), 500
         elapsed_ms = (time.time() - t0) * 1000.0
 
         filter_log = f"{filter_key}:{filter_value}" if filter_key and filter_value else None

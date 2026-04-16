@@ -13,6 +13,7 @@ You are building **MiniVecDB**, a mini vector database from scratch in Python fo
 - **Embedding** → `sentence-transformers` library, model `all-MiniLM-L6-v2`, produces 384-dim float32 vectors. Uses `cache_folder` rooted at `db_run/model_cache/huggingface`. Includes `SimpleEmbeddingEngine` fallback (bag-of-words) when sentence-transformers unavailable.
 - **Runtime path manager** → `core/runtime_paths.py` controls project-root path resolution, active run selection, unique run naming (`demo_<timestamp>_<random>`), cache path creation, shared DB path resolution, and run folder enumeration.
 - **Search** → built from scratch. Brute-force exact KNN. Three metrics: cosine similarity (default), euclidean distance, dot product. All implemented in `distance_metrics.py` using NumPy. Pre-filter via SQL metadata queries (session-scoped), THEN compute similarity only on filtered candidates.
+- **File processor** → `core/file_processor.py` handles bulk file uploads (TXT, CSV, Excel). Validates file size (≤10 MB) and extension, resolves messy tabular headers (CSV/Excel preamble rows, blank rows, duplicate header rows), serializes each tabular row as deterministic `Column: value` text, and returns `(texts, metadata_list)` ready for `insert_batch()`. Chunking is format-specific: TXT keeps sentence/word chunking with configurable overlap; CSV/Excel are row-first with zero overlap (long rows are split only within the same row). Uses `csv` + `pandas` + `openpyxl`. Both the web UI and CLI share this module.
 - **Legacy migration** → `storage/migrations.py` detects pre-v3 per-session `minivecdb.db` files, copies their collections/records/metadata into the shared DB under a new session row, and renames the old file to `minivecdb.db.legacy` (never deletes user data).
 
 **Disk layout (v3.0):**
@@ -42,11 +43,12 @@ minivecdb/
 ├── ARCHITECTURE.py         # Data models, SQL schema (v3.0: 6 tables + 3 triggers), SQL_QUERIES
 ├── AGENTS.md
 ├── README.md
-├── requirements.txt        # numpy, sentence-transformers, flask, pytest
+├── requirements.txt        # numpy, sentence-transformers, flask, pandas, openpyxl, pytest
 ├── core/
 │   ├── __init__.py
 │   ├── distance_metrics.py # 3 similarity metrics (cosine, euclidean, dot) + batch versions
 │   ├── embeddings.py       # EmbeddingEngine + SimpleEmbeddingEngine + factory
+│   ├── file_processor.py   # File upload pipeline: validate → extract (TXT/CSV/Excel) → chunk
 │   ├── runtime_paths.py    # Run folders, active run marker, cache paths, shared DB path, run listing
 │   └── vector_store.py     # Main VectorStore class (session-aware, shared-DB routing)
 ├── storage/
@@ -54,15 +56,15 @@ minivecdb/
 │   ├── database.py         # Session-bound DatabaseManager: record/metadata/collection CRUD + log_message/get_history
 │   └── migrations.py       # One-shot migration of legacy per-session DBs into the shared DB
 ├── cli/
-│   └── main.py             # argparse CLI: insert/search/delete/list/stats + --session/--new-run
+│   └── main.py             # argparse CLI: insert/search/delete/list/stats/import-file + --session/--new-run
 ├── web/
-│   ├── app.py              # Flask app: session picker + search/insert/history/stats + /api/search
+│   ├── app.py              # Flask app: session picker + search/insert/upload/history/stats + /api/search
 │   └── templates/
 │       ├── _base.html          # Shared layout: header, nav (gated on active session), session banner
 │       ├── select_session.html # Landing page: new session + resume dropdown + sessions table
 │       ├── index.html          # Search form (session-scoped)
 │       ├── results.html        # Search results page
-│       ├── insert.html         # Insert form
+│       ├── insert.html         # Insert page: paste-text tab + file-upload tab
 │       ├── stats.html          # Per-session stats
 │       └── history.html        # Chat history timeline (messages table for active session)
 ├── tests/
@@ -184,7 +186,8 @@ Routes:
 - `POST /session/switch` — rebind VectorStore to chosen session, redirect.
 - `GET /search-page` — search form; redirects to `/` if no active session.
 - `POST /search` — runs query, logs a `messages` row with `kind='search'`. Accepts `filter_key` + `filter_value` for arbitrary metadata pre-filtering (e.g. `category:Science`, `source:sample`, `book:harry`).
-- `POST /insert` — adds record, logs a `messages` row with `kind='insert'` and `response_ref=<new_id>`.
+- `GET/POST /insert` — insert page with two tabs: "Paste text" (single document + metadata) and "Upload file" (TXT/CSV/Excel). Text tab adds one record; file tab calls `process_file()` → `insert_batch()`. Both log to `messages`.
+- `GET/POST /upload` — file upload handler. GET redirects to insert page with file tab active. POST processes the upload, renders insert page with results.
 - `GET /history` — renders message timeline from `db.get_history()`.
 - `GET /stats` — per-session aggregate stats.
 - `GET /api/search` — JSON endpoint, same logging as `/search`. Accepts `filter_key` + `filter_value` params (also supports legacy `category` param for backwards compat).
@@ -194,9 +197,9 @@ Routes:
 - **Language:** Python 3.11+, type hints on all function signatures.
 - **Comments:** Every function gets a docstring explaining what it does, its parameters, and what it returns. Non-obvious logic gets inline comments. This is a learning project — comments are essential, not optional.
 - **Error handling:** Validate inputs, raise `ValueError` with clear messages. Handle SQLite errors with try/except. Never silently fail.
-- **Testing:** Every module gets tests. Use `pytest` if available, otherwise provide standalone test runner with `assert`-based checks. Tests must be runnable with `python tests/run_all_tests.py`.
+- **Testing:** Every module gets tests. Use `pytest` if available, otherwise provide standalone test runner with `assert`-based checks. Tests must be runnable with `python tests/run_all_tests.py` and, for local development, with `.venv/bin/python tests/run_all_tests.py` and `.venv/bin/python -m pytest tests/ -v`.
 - **Imports:** Import data models from `ARCHITECTURE.py`. Import metrics from `distance_metrics.py`. Import embeddings from `embeddings.py`. Don't redefine these.
-- **No external vector DB libraries:** Never use ChromaDB, FAISS, Pinecone, Weaviate, or any vector database library. The vector search is built from scratch. Only allowed libraries: numpy, sentence-transformers, flask, sqlite3 (built-in), pytest, json, os, time, uuid, argparse, dataclasses, typing.
+- **No external vector DB libraries:** Never use ChromaDB, FAISS, Pinecone, Weaviate, or any vector database library. The vector search is built from scratch. Only allowed libraries: numpy, sentence-transformers, flask, pandas, openpyxl, sqlite3 (built-in), pytest, json, os, time, uuid, argparse, dataclasses, typing, tempfile, re.
 - **Float32:** All vectors stored as `np.float32` to save memory.
 - **Auto-save:** After every insert/delete/update, save `vectors.npy` and `id_mapping.json`. SQLite auto-commits.
 - **Runtime artifacts:** Keep all generated runtime files inside `db_run/` and ensure `db_run/` stays in `.gitignore`.

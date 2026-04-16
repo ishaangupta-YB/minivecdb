@@ -2,52 +2,181 @@
 {% block title %}Insert &mdash; MiniVecDB{% endblock %}
 
 {% block content %}
-  <div class="card">
-    <h2 style="margin-top:0;">Insert a document</h2>
+  <div class="card" data-active-tab="{{ active_tab or 'text' }}">
+    <h2 style="margin-top:0;">Add documents</h2>
 
     {% if inserted_id %}
       <div class="ok">
         Inserted! New record id: <code>{{ inserted_id }}</code>
       </div>
     {% endif %}
+
+    {% if upload_result %}
+      <div class="ok">
+        <strong>{{ upload_result.filename }}</strong> processed successfully!<br>
+        {{ upload_result.chunk_count }} chunk(s) inserted into collection
+        <code>{{ upload_result.collection }}</code>
+        in {{ upload_result.elapsed_ms }} ms.
+        {% if upload_result.sample_ids %}
+          <div style="margin-top: 0.5rem;">
+            Sample IDs:
+            {% for rid in upload_result.sample_ids %}
+              <code>{{ rid }}</code>{% if not loop.last %}, {% endif %}
+            {% endfor %}
+            {% if upload_result.remaining > 0 %}
+              &hellip; and {{ upload_result.remaining }} more
+            {% endif %}
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
+
     {% if error %}
       <div class="error">{{ error }}</div>
     {% endif %}
 
-    <form action="{{ url_for('insert') }}" method="post" data-loading-message="Inserting document and generating embedding...">
-      <div style="margin-bottom: 0.75rem;">
-        <label for="text">Text</label>
-        <textarea id="text" name="text" required placeholder="Paste or type the document text here...">{{ text or "" }}</textarea>
-      </div>
+    <div class="tab-bar" style="display:flex; gap:0; margin-bottom:1.25rem; border-bottom: 2px solid var(--border);">
+      <button type="button" class="tab-btn active" data-tab="text-tab"
+              style="padding:0.5rem 1.25rem; font-weight:600; font-size:0.875rem; background:none; border:none; border-bottom:2px solid var(--primary); margin-bottom:-2px; color:var(--primary); cursor:pointer;">
+        Paste text
+      </button>
+      <button type="button" class="tab-btn" data-tab="file-tab"
+              style="padding:0.5rem 1.25rem; font-weight:600; font-size:0.875rem; background:none; border:none; border-bottom:2px solid transparent; margin-bottom:-2px; color:var(--text-muted); cursor:pointer;">
+        Upload file
+      </button>
+    </div>
 
-      <label>Metadata (optional key-value pairs)</label>
-      <div class="row" style="margin-bottom: 0.4rem;">
-        <div><input type="text" name="meta_key" placeholder="key (e.g. category)"></div>
-        <div><input type="text" name="meta_value" placeholder="value (e.g. Technology)"></div>
-      </div>
-      <div class="row" style="margin-bottom: 0.4rem;">
-        <div><input type="text" name="meta_key" placeholder="key"></div>
-        <div><input type="text" name="meta_value" placeholder="value"></div>
-      </div>
-      <div class="row" style="margin-bottom: 0.4rem;">
-        <div><input type="text" name="meta_key" placeholder="key"></div>
-        <div><input type="text" name="meta_value" placeholder="value"></div>
-      </div>
+    {# ---- Tab 1: Paste text ---- #}
+    <div id="text-tab">
+      <form action="{{ url_for('insert') }}" method="post" data-loading-message="Inserting document and generating embedding...">
+        <input type="hidden" name="mode" value="text">
+        <div style="margin-bottom: 0.75rem;">
+          <label for="text">Text</label>
+          <textarea id="text" name="text" required placeholder="Paste or type the document text here...">{{ text or "" }}</textarea>
+        </div>
 
-      <div style="margin-top: 1.5rem; display: flex; gap: 0.75rem;">
-        <button type="submit" data-loading-label="Inserting..." data-loading-message="Inserting document and generating embedding...">
-          <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>
-          </svg>
-          Insert
-        </button>
-        <a href="{{ url_for('index') }}" class="btn secondary" data-loading-link data-loading-message="Opening session picker...">
-          <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="15 18 9 12 15 6"></polyline>
-          </svg>
-          Home
-        </a>
-      </div>
-    </form>
+        <label>Metadata (optional key-value pairs)</label>
+        <div class="row" style="margin-bottom: 0.4rem;">
+          <div><input type="text" name="meta_key" placeholder="key (e.g. category)"></div>
+          <div><input type="text" name="meta_value" placeholder="value (e.g. Technology)"></div>
+        </div>
+        <div class="row" style="margin-bottom: 0.4rem;">
+          <div><input type="text" name="meta_key" placeholder="key"></div>
+          <div><input type="text" name="meta_value" placeholder="value"></div>
+        </div>
+        <div class="row" style="margin-bottom: 0.4rem;">
+          <div><input type="text" name="meta_key" placeholder="key"></div>
+          <div><input type="text" name="meta_value" placeholder="value"></div>
+        </div>
+
+        <div style="margin-top: 1.5rem; display: flex; gap: 0.75rem;">
+          <button type="submit" data-loading-label="Inserting..." data-loading-message="Inserting document and generating embedding...">
+            <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            Insert
+          </button>
+          <a href="{{ url_for('index') }}" class="btn secondary" data-loading-link data-loading-message="Opening session picker...">
+            <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
+            Home
+          </a>
+        </div>
+      </form>
+    </div>
+
+    {# ---- Tab 2: Upload file ---- #}
+    <div id="file-tab" style="display:none;">
+      <p class="meta" style="margin-top:0;">
+        Upload a TXT, CSV, or Excel file (max {{ max_mb }} MB).
+        It will be parsed, chunked into &le;500-character segments, and indexed.
+      </p>
+      <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data"
+            data-loading-message="Uploading and processing file...">
+
+        <div style="margin-bottom: 0.75rem;">
+          <label for="file">File</label>
+          <input
+            type="file"
+            id="file"
+            name="file"
+            accept=".txt,.csv,.xlsx,.xls"
+            required
+            style="padding: 0.6rem; border: 1px dashed var(--border); border-radius: var(--radius); width: 100%; background: var(--bg);"
+          >
+          <span class="meta" style="font-size: 0.75rem;">
+            Accepted: .txt, .csv, .xlsx, .xls
+          </span>
+        </div>
+
+        <div style="margin-bottom: 0.75rem;">
+          <label for="collection">Collection</label>
+          <select id="collection" name="collection">
+            {% for col in collections %}
+              <option value="{{ col[0] }}">{{ col[0] }} ({{ col[4] }} records)</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <label>Extra metadata (optional, applied to every chunk)</label>
+        <div class="row" style="margin-bottom: 0.4rem;">
+          <div><input type="text" name="meta_key" placeholder="key (e.g. category)"></div>
+          <div><input type="text" name="meta_value" placeholder="value (e.g. Technology)"></div>
+        </div>
+        <div class="row" style="margin-bottom: 0.4rem;">
+          <div><input type="text" name="meta_key" placeholder="key"></div>
+          <div><input type="text" name="meta_value" placeholder="value"></div>
+        </div>
+
+        <div style="margin-top: 1.5rem; display: flex; gap: 0.75rem;">
+          <button type="submit" data-loading-label="Uploading..." data-loading-message="Uploading and processing file...">
+            <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+            Upload &amp; Index
+          </button>
+          <a href="{{ url_for('index') }}" class="btn secondary" data-loading-link data-loading-message="Opening session picker...">
+            <svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
+            Home
+          </a>
+        </div>
+      </form>
+    </div>
   </div>
+
+  <script>
+    (function () {
+      var tabs = document.querySelectorAll('.tab-btn');
+      var textPanel = document.getElementById('text-tab');
+      var filePanel = document.getElementById('file-tab');
+      if (!tabs.length || !textPanel || !filePanel) return;
+
+      tabs.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var target = btn.getAttribute('data-tab');
+          tabs.forEach(function (b) {
+            b.classList.remove('active');
+            b.style.borderBottomColor = 'transparent';
+            b.style.color = 'var(--text-muted)';
+          });
+          btn.classList.add('active');
+          btn.style.borderBottomColor = 'var(--primary)';
+          btn.style.color = 'var(--primary)';
+
+          textPanel.style.display = target === 'text-tab' ? '' : 'none';
+          filePanel.style.display = target === 'file-tab' ? '' : 'none';
+        });
+      });
+
+      var card = document.querySelector('.card[data-active-tab]');
+      if (card && card.getAttribute('data-active-tab') === 'file') {
+        tabs[1].click();
+      }
+    })();
+  </script>
 {% endblock %}

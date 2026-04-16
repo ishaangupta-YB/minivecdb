@@ -69,15 +69,18 @@ Before computing expensive vector similarity, MiniVecDB can narrow candidates us
 | Structured Storage | sqlite3 (built-in) | Records, metadata, collections |
 | Vector Storage | NumPy | Embedding matrices, batch math |
 | Embedding Model | sentence-transformers | Text → 384-dim vector conversion |
+| File Processing | csv + pandas + openpyxl | Robust TXT/CSV/Excel ingestion with tabular header normalization |
 | CLI | argparse (built-in) | Command-line interface |
 | Web UI | Flask | Browser-based search interface |
-| Testing | pytest | Automated test suite |
+| Testing | pytest + run_all_tests.py | Automated suite (run with `.venv/bin/python -m pytest tests/ -v` or `.venv/bin/python tests/run_all_tests.py`) |
 
 ### Dependencies (requirements.txt)
 ```
 numpy>=1.24.0              # Core math library
 sentence-transformers>=2.2.0  # Neural embedding model
 flask>=3.0.0               # Web server
+pandas>=2.0.0              # CSV/Excel file parsing
+openpyxl>=3.1.0            # Excel (.xlsx) support for pandas
 pytest>=7.0.0              # Testing framework
 ```
 
@@ -97,6 +100,7 @@ minivecdb/
 │   ├── __init__.py          # Package exports
 │   ├── distance_metrics.py  # 3 similarity metrics (cosine, euclidean, dot)
 │   ├── embeddings.py        # Text → vector conversion engines
+│   ├── file_processor.py    # File upload pipeline: validate → extract/normalize → format-specific chunk
 │   ├── runtime_paths.py     # Path management for db_run folders
 │   └── vector_store.py      # ★ The main VectorStore class (heart of project)
 │

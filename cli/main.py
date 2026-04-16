@@ -16,7 +16,7 @@
 |    stats             Show database statistics                   |
 |    collections       List all collections with record counts    |
 |    create-collection Create a new collection                    |
-|    import-file       Bulk import documents from a text file     |
+|    import-file       Import & chunk a file (TXT/CSV/Excel)      |
 |                                                                |
 |  Usage:                                                         |
 |    python cli/main.py insert --text "Hello world"              |
@@ -38,6 +38,7 @@ import json
 import sys
 import os
 import time
+from typing import List, Optional
 
 # ---------------------------------------------------------------
 # Add the project root to Python's import path so we can import
@@ -392,44 +393,129 @@ def cmd_create_collection(args: argparse.Namespace, store: VectorStore) -> None:
         print(f"  Description: {info.description}")
 
 
+def _parse_skip_rows_arg(raw_value: Optional[str]) -> Optional[int | List[int]]:
+    """
+    Parse CLI --skip-rows into an int or list[int].
+
+    Accepted values:
+      - "3"         -> 3
+      - "0,1,2"     -> [0, 1, 2]
+      - None / ""   -> None
+    """
+    if raw_value is None:
+        return None
+    text = raw_value.strip()
+    if not text:
+        return None
+    if "," not in text:
+        return int(text)
+
+    parts = [part.strip() for part in text.split(",")]
+    if not all(parts):
+        raise ValueError(
+            "--skip-rows must be a single integer or a comma-separated "
+            "list like '0,1,2'."
+        )
+    return [int(part) for part in parts]
+
+
+def _parse_sheet_arg(raw_value: str) -> int | str:
+    """Parse CLI --sheet into either an integer index or sheet name."""
+    text = (raw_value or "0").strip()
+    if not text:
+        return 0
+    try:
+        return int(text)
+    except ValueError:
+        return text
+
+
 def cmd_import_file(args: argparse.Namespace, store: VectorStore) -> None:
     """
     Handle the 'import-file' subcommand.
 
-    Reads a text file (one document per line) and bulk-inserts
-    all non-empty lines into the database.
+    Supports TXT, CSV, and Excel files. The file is parsed by the
+    file_processor module and returned as (texts, metadata_list)
+    for insert_batch().
 
-    Uses insert_batch() for speed — all texts are embedded in one
-    pass through the neural network, which is 10-50x faster than
-    inserting them one by one.
+    Chunking behavior:
+      - TXT: semantic chunking with configurable overlap.
+      - CSV/Excel: row-first chunking with zero overlap; long rows are
+        split only within the same row when needed.
+
+    Optional tabular overrides:
+      - --header-row
+      - --skip-rows
+      - --sheet (Excel only)
     """
-    file_path = args.file
+    from core.file_processor import process_file
 
-    # --- Validate the file exists ---
+    file_path = args.file
+    chunk_size = args.chunk_size
+    chunk_overlap = args.chunk_overlap
+    header_row = args.header_row
+
+    try:
+        skip_rows = _parse_skip_rows_arg(args.skip_rows)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    sheet_name = _parse_sheet_arg(args.sheet)
+
     if not os.path.isfile(file_path):
         print(f"Error: File not found: {file_path}")
         sys.exit(1)
 
-    # --- Read lines and filter out blanks ---
-    with open(file_path, "r", encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
+    original_filename = os.path.basename(file_path)
 
-    if not lines:
-        print(f"Error: File is empty or contains only blank lines: {file_path}")
+    try:
+        texts, metadata_list = process_file(
+            file_path,
+            original_filename,
+            max_chars=chunk_size,
+            overlap=chunk_overlap,
+            header_row=header_row,
+            skip_rows=skip_rows,
+            sheet_name=sheet_name,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
         sys.exit(1)
 
-    print(f"Importing {len(lines)} document(s) from: {file_path}")
-    print(f"Collection: {args.collection}")
+    ext = os.path.splitext(original_filename)[1].lower()
+    file_type = {".txt": "TXT", ".csv": "CSV", ".xlsx": "Excel", ".xls": "Excel"}.get(ext, ext)
 
-    # --- Bulk insert using insert_batch() ---
+    print(f"File:       {original_filename} ({file_type})")
+    if ext == ".txt":
+        print(
+            f"Chunks:     {len(texts)} (max {chunk_size} chars, "
+            f"{chunk_overlap} overlap)"
+        )
+    else:
+        print(
+            f"Chunks:     {len(texts)} (row-wise, max {chunk_size} chars, "
+            "0 overlap for tabular rows)"
+        )
+        if header_row is not None:
+            print(f"Header row override: {header_row}")
+        if skip_rows is not None:
+            print(f"Skip rows: {skip_rows}")
+        if ext in {'.xlsx', '.xls'}:
+            print(f"Sheet: {sheet_name}")
+    print(f"Collection: {args.collection}")
+    print()
+
+    t0 = time.time()
     ids = store.insert_batch(
-        texts=lines,
+        texts=texts,
+        metadata_list=metadata_list,
         collection=args.collection,
     )
+    elapsed_ms = (time.time() - t0) * 1000.0
 
-    print(f"Successfully imported {len(ids)} document(s).")
+    print(f"Successfully imported {len(ids)} chunk(s) in {elapsed_ms:.0f} ms.")
 
-    # Show a few sample IDs so the user can verify.
     preview_count = min(5, len(ids))
     print(f"\nFirst {preview_count} IDs:")
     for record_id in ids[:preview_count]:
@@ -658,15 +744,51 @@ def build_parser() -> argparse.ArgumentParser:
     # ----- import-file -----
     p_import = subparsers.add_parser(
         "import-file",
-        help="Bulk import documents from a text file (one per line)",
+        help="Import & chunk a file (TXT, CSV, or Excel) into the database",
     )
     p_import.add_argument(
         "--file", required=True,
-        help="Path to the text file to import",
+        help="Path to the file to import (.txt, .csv, .xlsx, .xls)",
     )
     p_import.add_argument(
         "--collection", default="default",
         help="Target collection (default: default)",
+    )
+    p_import.add_argument(
+        "--chunk-size", type=int, default=500,
+        help="Max characters per chunk (default: 500)",
+    )
+    p_import.add_argument(
+        "--chunk-overlap", type=int, default=50,
+        help=(
+            "Overlap characters between adjacent chunks for TXT files "
+            "(default: 50). CSV/Excel chunking is row-wise with 0 overlap."
+        ),
+    )
+    p_import.add_argument(
+        "--header-row",
+        type=int,
+        default=None,
+        help=(
+            "Optional 0-based row index to force as header in CSV/Excel. "
+            "If omitted, MiniVecDB auto-detects the header row."
+        ),
+    )
+    p_import.add_argument(
+        "--skip-rows",
+        default=None,
+        help=(
+            "Optional rows to skip before parsing CSV/Excel. "
+            "Use a single integer (e.g. 2) or comma list (e.g. 0,1,5)."
+        ),
+    )
+    p_import.add_argument(
+        "--sheet",
+        default="0",
+        help=(
+            "Excel sheet to read (0-based index or sheet name). "
+            "Ignored for TXT/CSV. Default: 0"
+        ),
     )
     p_import.set_defaults(handler=cmd_import_file)
 

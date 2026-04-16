@@ -42,6 +42,8 @@ TEST_FILES_IN_ORDER: List[str] = [
     "test_day6.py",
     "test_day7.py",
     "test_day8.py",
+    "test_file_processor.py",
+    "test_file_processor_search_integration.py",
     "test_integration.py",
     "test_edge_cases.py",
 ]
@@ -53,6 +55,8 @@ PYTEST_REQUIRED_FILES = {
     "test_day6.py",
     "test_day7.py",
     "test_day8.py",
+    "test_file_processor.py",
+    "test_file_processor_search_integration.py",
 }
 
 

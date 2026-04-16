@@ -1,8 +1,8 @@
 # MiniVecDB — File: `web/` (Flask Web Interface, v3.0)
 
 > **Location**: `minivecdb/web/`
-> **Total size**: `app.py` (510 lines, 16.9 KB) + 7 templates (23.3 KB)
-> **Role**: Session-aware web UI with search, insert, history, stats, and JSON API
+> **Total size**: `app.py` (~680 lines) + 8 templates
+> **Role**: Session-aware web UI with search, insert, file upload, history, stats, and JSON API
 
 ---
 
@@ -19,7 +19,7 @@ The web module is a **fully implemented** Flask application providing a browser-
 
 ---
 
-## File: `web/app.py` (510 lines)
+## File: `web/app.py` (~680 lines)
 
 ### Module-Level State
 
@@ -48,7 +48,9 @@ _store_session_name: Optional[str] = None     # Name of the bound session
 | `GET /search-page` | GET | `search_page()` | `index.html` | Search form with metadata filter (key + value) |
 | `POST /search` | POST/GET | `search()` | `results.html` | Execute search + log + show results |
 | `GET /stats` | GET | `stats()` | `stats.html` | Per-session database statistics |
-| `GET/POST /insert` | GET/POST | `insert()` | `insert.html` | Insert form + execute + log |
+| `GET/POST /insert` | GET/POST | `insert()` | `insert.html` | Insert page: "Paste text" tab + "Upload file" tab |
+| `GET/POST /upload` | GET/POST | `upload()` | `insert.html` | File upload handler; renders insert page with file tab active |
+| `GET /records` | GET | `records()` | `records.html` | Paginated record browser (optional collection filter) |
 | `GET /history` | GET | `history()` | `history.html` | Chat history timeline |
 | `GET /api/search` | GET | `api_search()` | JSON response | JSON API endpoint |
 | `GET /favicon.ico` | GET | `favicon()` | 204 No Content | Suppress favicon 404s |
@@ -76,19 +78,31 @@ _store_session_name: Optional[str] = None     # Name of the bound session
 3. Builds `filters = {filter_key: filter_value}` only when both are non-empty
 4. Calls `store.search()` with timing
 5. Logs a `messages` row with `kind='search'` and `category_filter="key:value"`
-6. Renders results with score display
+6. Handles `ValueError` as user-facing input/search errors
+7. Handles unexpected exceptions with safe error text (and server logs)
+8. Renders results with score display
 
-#### `GET/POST /insert` — Insert Document
-1. GET: Shows empty form
-2. POST: Extracts `text` + up to 3 metadata key/value pairs
+#### `GET/POST /insert` — Insert Page (Two Tabs)
+1. GET: Shows insert page with two tabs: "Paste text" and "Upload file"
+2. POST (text tab): Extracts `text` + up to 3 metadata key-value pairs
 3. Calls `store.insert()` with timing
 4. Logs a `messages` row with `kind='insert'` and `response_ref=new_id`
 5. Shows success message with new record ID
 
+#### `GET/POST /upload` — File Upload Handler
+1. GET: Redirects to insert page with the "Upload file" tab active
+2. POST: Saves uploaded file to temp, calls `process_file()` from `core.file_processor`:
+   - validates ≤10 MB
+   - TXT: semantic chunking with overlap
+   - CSV/Excel: robust header normalization + row-first chunking with zero overlap
+   then calls `store.insert_batch()`
+3. Logs to messages with `kind='insert'` and `query_text='[file upload] <filename>'`
+4. Renders insert page (file tab) with success summary: filename, chunk count, collection, elapsed time, sample IDs
+
 #### `GET /api/search` — JSON API
 - Query params: `q` (required), `metric` (default cosine), `top_k` (default 5), `filter_key`, `filter_value` (also supports legacy `category` param for backwards compat)
 - Returns JSON payload: `{session, query, metric, top_k, filter_key, filter_value, elapsed_ms, count, results}`
-- Error responses: 400 (missing/bad params), 409 (no session)
+- Error responses: 400 (missing/bad params), 409 (no session), 500 (unexpected runtime failure)
 - Logs to messages table same as POST /search
 
 ### Entry Point
@@ -104,7 +118,7 @@ Run with: `python -m web.app` → http://localhost:5000
 
 ---
 
-## Templates (7 Files)
+## Templates (8 Files)
 
 All templates extend `_base.html` via Jinja2 inheritance.
 
@@ -145,12 +159,18 @@ All templates extend `_base.html` via Jinja2 inheritance.
 - Result cards: rank badge (#1, #2...), score display (percentage for cosine), full text, metadata pills, record ID
 - "No results" fallback when empty
 
-### `insert.html` (54 lines, 2.2 KB) — Insert Form
+### `insert.html` (~180 lines) — Two-Tab Insert + Upload UI
 
-- Textarea for document text
-- 3 rows of metadata key/value inputs (form sends `meta_key[]` / `meta_value[]`)
-- Success banner with new record ID on insert
-- Error banner on failure
+- Tab 1: Paste text + metadata key/value rows
+- Tab 2: Upload file (`.txt`, `.csv`, `.xlsx`, `.xls`) + collection picker + extra metadata
+- Upload success panel with chunk count, elapsed time, sample IDs
+- Error/success banners shared across both tabs
+
+### `records.html` — Record Browser
+
+- Paginated table view of records in the active session
+- Optional collection filter
+- Shows text preview, metadata summary, created timestamp
 
 ### `history.html` (42 lines, 1.5 KB) — Chat History Timeline
 
@@ -172,7 +192,8 @@ _base.html
 ├── select_session.html   (GET /)
 ├── index.html            (GET /search-page)
 ├── results.html          (POST /search)
-├── insert.html           (GET/POST /insert)
+├── insert.html           (GET/POST /insert + /upload)
+├── records.html          (GET /records)
 ├── history.html          (GET /history)
 └── stats.html            (GET /stats)
 ```

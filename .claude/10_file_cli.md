@@ -1,7 +1,7 @@
 # MiniVecDB — File: cli/main.py (Command-Line Interface)
 
 > **Location**: `minivecdb/cli/main.py`
-> **Lines**: 719 | **Size**: 23.0 KB
+> **Lines**: ~805 | **Size**: ~26 KB
 > **Purpose**: Terminal interface to MiniVecDB using Python's built-in argparse library
 
 ---
@@ -45,7 +45,7 @@ Terminal → argparse → build_parser() → parse_args()
 | `stats` | Database statistics | (none) |
 | `collections` | List all collections | (none) |
 | `create-collection` | Create new collection | `--name`, `--description` |
-| `import-file` | Bulk import from file | `--file`, `--collection` |
+| `import-file` | Import & chunk a file (TXT/CSV/Excel) | `--file`, `--collection`, `--chunk-size`, `--chunk-overlap`, `--header-row`, `--skip-rows`, `--sheet` |
 
 ### Global Options (apply to all commands)
 
@@ -94,8 +94,11 @@ python cli/main.py collections
 # Create a collection
 python cli/main.py create-collection --name papers --description "Research papers"
 
-# Bulk import from file
+# Bulk import from file (TXT, CSV, or Excel — auto-detects format)
 python cli/main.py import-file --file data/documents.txt --collection papers
+python cli/main.py import-file --file data/articles.csv --collection papers --chunk-size 500 --chunk-overlap 50
+python cli/main.py import-file --file data/roster.csv --header-row 2 --skip-rows 0,1
+python cli/main.py import-file --file data/roster.xlsx --sheet Students --header-row 1
 
 # Force a new run
 python cli/main.py --new-run insert --text "Fresh start"
@@ -165,7 +168,14 @@ Each handler follows the pattern:
 **Lines 380–392** | Creates a new collection.
 
 #### `cmd_import_file(args, store)`
-**Lines 395–438** | Reads a text file, filters blank lines, and bulk-inserts using `store.insert_batch()`.
+**Lines ~430–530** | Supports TXT, CSV, and Excel files. Delegates to `core.file_processor.process_file()` which validates the file (size ≤10 MB, supported extension), performs robust tabular header normalization for CSV/Excel, serializes each tabular row as deterministic `Column: value` text, and chunks with format-specific policy:
+- TXT: semantic chunking with `--chunk-overlap`
+- CSV/Excel: row-first chunking with zero overlap
+
+Additional tabular overrides:
+- `--header-row` (force header row index)
+- `--skip-rows` (single int or comma list)
+- `--sheet` (Excel sheet index/name)
 
 ---
 
